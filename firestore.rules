@@ -1,0 +1,521 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 4.1: Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // PRIMITIVES GLOBALES (Phase 3)
+    // =========================================================================
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidPhone(phone) {
+      return phone is string && phone.size() >= 8 && phone.size() <= 20 && phone.matches('^\\+[1-9][0-9]{7,15}$');
+    }
+
+    function isValidDateStr(d) {
+      return d is string && d.size() == 10 && d.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.size() >= 3 && email.size() <= 160;
+    }
+
+    function isTenantMember(tenantId) {
+      return isVerified() && exists(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid));
+    }
+
+    function isTenantOwner(tenantId) {
+      return isTenantMember(tenantId) &&
+        get(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid)).data.role == 'owner';
+    }
+
+    // =========================================================================
+    // VALIDATION BLUEPRINTS (Pillar 2 - Anti-Update-Gap)
+    // =========================================================================
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'tenantId', 'role', 'name', 'email', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'tenantId', 'role', 'name', 'email', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        isValidId(data.tenantId) &&
+        data.role in ['owner', 'staff'] &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        isValidEmail(data.email) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTenantInvite(data) {
+      return data.keys().hasAll(['tenantId', 'tenantName', 'email', 'name', 'role', 'status', 'invitedBy', 'createdAt']) &&
+        data.keys().hasOnly(['tenantId', 'tenantName', 'email', 'name', 'role', 'status', 'invitedBy', 'createdAt']) &&
+        isValidId(data.tenantId) &&
+        data.tenantName is string && data.tenantName.size() >= 1 && data.tenantName.size() <= 120 &&
+        isValidEmail(data.email) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.role == 'staff' &&
+        data.status in ['pending', 'accepted', 'revoked'] &&
+        isValidId(data.invitedBy) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidTenant(data) {
+      return data.keys().hasAll([
+          'name', 'sector', 'phone', 'email', 'plan', 'maxDebtors',
+          'maxRemindersPerMonth', 'remindersUsedThisMonth', 'quotaResetMonth',
+          'subscriptionDate', 'quietHoursStart', 'quietHoursEnd', 'timezone',
+          'autoEscalate', 'fallbackToSms', 'ownerId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'name', 'sector', 'phone', 'email', 'plan', 'maxDebtors',
+          'maxRemindersPerMonth', 'remindersUsedThisMonth', 'quotaResetMonth',
+          'subscriptionDate', 'quietHoursStart', 'quietHoursEnd', 'timezone',
+          'autoEscalate', 'fallbackToSms', 'ownerId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.sector is string && data.sector.size() >= 1 && data.sector.size() <= 80 &&
+        isValidPhone(data.phone) &&
+        isValidEmail(data.email) &&
+        data.plan in ['free', 'starter', 'pro', 'business'] &&
+        data.maxDebtors is int && data.maxDebtors >= 1 &&
+        data.maxRemindersPerMonth is int && data.maxRemindersPerMonth >= 0 &&
+        data.remindersUsedThisMonth is int && data.remindersUsedThisMonth >= 0 &&
+        data.quotaResetMonth is string && data.quotaResetMonth.size() == 7 && data.quotaResetMonth.matches('^[0-9]{4}-[0-9]{2}$') &&
+        data.subscriptionDate is string && data.subscriptionDate.size() <= 40 &&
+        data.quietHoursStart is int && data.quietHoursStart >= 0 && data.quietHoursStart <= 23 &&
+        data.quietHoursEnd is int && data.quietHoursEnd >= 0 && data.quietHoursEnd <= 23 &&
+        data.timezone is string && data.timezone.size() >= 3 && data.timezone.size() <= 40 &&
+        data.autoEscalate is bool &&
+        data.fallbackToSms is bool &&
+        isValidId(data.ownerId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTenantUser(data, tenantId) {
+      return data.keys().hasAll(['tenantId', 'uid', 'role', 'name', 'email', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['tenantId', 'uid', 'role', 'name', 'email', 'status', 'inviteId', 'createdAt', 'updatedAt']) &&
+        isValidId(data.tenantId) && data.tenantId == tenantId &&
+        isValidId(data.uid) &&
+        data.role in ['owner', 'staff'] &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        isValidEmail(data.email) &&
+        data.status in ['active', 'suspended'] &&
+        (!('inviteId' in data) || (data.inviteId is string && data.inviteId.size() <= 128)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDebtor(data, tenantId) {
+      return data.keys().hasAll(['tenantId', 'name', 'phone', 'preferredChannel', 'note', 'optOut', 'reliabilityScore', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['tenantId', 'name', 'phone', 'preferredChannel', 'note', 'optOut', 'reliabilityScore', 'promiseDate', 'createdAt', 'updatedAt']) &&
+        isValidId(data.tenantId) && data.tenantId == tenantId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        isValidPhone(data.phone) &&
+        data.preferredChannel in ['whatsapp', 'sms'] &&
+        data.note is string && data.note.size() <= 500 &&
+        data.optOut is bool &&
+        data.reliabilityScore is int && data.reliabilityScore >= 0 && data.reliabilityScore <= 100 &&
+        (!('promiseDate' in data) || (data.promiseDate is string && data.promiseDate.size() <= 20)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDebt(data, tenantId) {
+      return data.keys().hasAll([
+          'tenantId', 'debtorId', 'debtorName', 'debtorPhone', 'initialAmount',
+          'remainingAmount', 'issuedAt', 'dueDate', 'status', 'description',
+          'reminderCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'tenantId', 'debtorId', 'debtorName', 'debtorPhone', 'initialAmount',
+          'remainingAmount', 'issuedAt', 'dueDate', 'status', 'description',
+          'reminderCount', 'lastReminderAt', 'paymentLink', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.tenantId) && data.tenantId == tenantId &&
+        isValidId(data.debtorId) &&
+        data.debtorName is string && data.debtorName.size() >= 1 && data.debtorName.size() <= 120 &&
+        isValidPhone(data.debtorPhone) &&
+        data.initialAmount is int && data.initialAmount > 0 && data.initialAmount <= 500000000 &&
+        data.remainingAmount is int && data.remainingAmount >= 0 && data.remainingAmount <= data.initialAmount &&
+        isValidDateStr(data.issuedAt) &&
+        isValidDateStr(data.dueDate) &&
+        data.status in ['en_cours', 'partiellement_payee', 'payee', 'en_retard', 'annulee'] &&
+        (
+          (data.status == 'payee' && data.remainingAmount == 0) ||
+          (data.status == 'annulee') ||
+          (data.status in ['en_cours', 'partiellement_payee', 'en_retard'] && data.remainingAmount > 0)
+        ) &&
+        data.description is string && data.description.size() <= 300 &&
+        data.reminderCount is int && data.reminderCount >= 0 && data.reminderCount <= 50 &&
+        (!('lastReminderAt' in data) || (data.lastReminderAt is string && data.lastReminderAt.size() <= 40)) &&
+        (!('paymentLink' in data) || (data.paymentLink is string && data.paymentLink.size() <= 300)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPayment(data, tenantId) {
+      return data.keys().hasAll([
+          'tenantId', 'debtId', 'debtorId', 'debtorName', 'amount',
+          'paidAt', 'method', 'note', 'receiptNumber', 'createdBy', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'tenantId', 'debtId', 'debtorId', 'debtorName', 'amount',
+          'paidAt', 'method', 'note', 'receiptNumber', 'createdBy', 'createdAt'
+        ]) &&
+        isValidId(data.tenantId) && data.tenantId == tenantId &&
+        isValidId(data.debtId) &&
+        isValidId(data.debtorId) &&
+        data.debtorName is string && data.debtorName.size() >= 1 && data.debtorName.size() <= 120 &&
+        data.amount is int && data.amount > 0 && data.amount <= 500000000 &&
+        data.paidAt is string && data.paidAt.size() >= 10 && data.paidAt.size() <= 40 &&
+        data.method in ['especes', 'mtn_momo', 'orange_money', 'autre'] &&
+        data.note is string && data.note.size() <= 300 &&
+        data.receiptNumber is string && data.receiptNumber.size() >= 4 && data.receiptNumber.size() <= 40 &&
+        isValidId(data.createdBy) && data.createdBy == request.auth.uid &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidReminderRule(data, tenantId) {
+      return data.keys().hasAll([
+          'tenantId', 'offsetDays', 'label', 'channel', 'tone',
+          'allowedStartHour', 'allowedEndHour', 'maxReminders', 'enabled', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'tenantId', 'offsetDays', 'label', 'channel', 'tone',
+          'allowedStartHour', 'allowedEndHour', 'maxReminders', 'enabled', 'updatedAt'
+        ]) &&
+        isValidId(data.tenantId) && data.tenantId == tenantId &&
+        data.offsetDays is int && data.offsetDays >= -30 && data.offsetDays <= 180 &&
+        data.label is string && data.label.size() >= 1 && data.label.size() <= 60 &&
+        data.channel in ['whatsapp', 'sms'] &&
+        data.tone in ['amical', 'ferme', 'dernier_avis'] &&
+        data.allowedStartHour is int && data.allowedStartHour >= 6 && data.allowedStartHour <= 20 &&
+        data.allowedEndHour is int && data.allowedEndHour >= 8 && data.allowedEndHour <= 22 &&
+        data.allowedEndHour > data.allowedStartHour &&
+        data.maxReminders is int && data.maxReminders >= 1 && data.maxReminders <= 20 &&
+        data.enabled is bool &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMessageTemplate(data, tenantId) {
+      return data.keys().hasAll(['tenantId', 'tone', 'channel', 'body', 'updatedAt']) &&
+        data.keys().hasOnly(['tenantId', 'tone', 'channel', 'body', 'metaTemplateName', 'updatedAt']) &&
+        isValidId(data.tenantId) && data.tenantId == tenantId &&
+        data.tone in ['amical', 'ferme', 'dernier_avis'] &&
+        data.channel in ['whatsapp', 'sms'] &&
+        data.body is string && data.body.size() >= 10 && data.body.size() <= 1000 &&
+        (!('metaTemplateName' in data) || (data.metaTemplateName is string && data.metaTemplateName.size() <= 80)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidReminder(data, tenantId) {
+      return data.keys().hasAll([
+          'tenantId', 'debtId', 'debtorId', 'scheduledAt', 'channel',
+          'tone', 'status', 'providerMessageId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'tenantId', 'debtId', 'debtorId', 'scheduledAt', 'channel',
+          'tone', 'status', 'providerMessageId', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.tenantId) && data.tenantId == tenantId &&
+        isValidId(data.debtId) &&
+        isValidId(data.debtorId) &&
+        data.scheduledAt is string && data.scheduledAt.size() <= 40 &&
+        data.channel in ['whatsapp', 'sms'] &&
+        data.tone in ['amical', 'ferme', 'dernier_avis'] &&
+        data.status in ['planifiee', 'envoyee', 'delivree', 'lue', 'echouee', 'annulee'] &&
+        data.providerMessageId is string && data.providerMessageId.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMessageLog(data, tenantId) {
+      return data.keys().hasAll([
+          'tenantId', 'debtorId', 'debtorName', 'debtorPhone', 'direction',
+          'channel', 'content', 'status', 'providerMessageId', 'detectedIntent', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'tenantId', 'debtId', 'debtorId', 'debtorName', 'debtorPhone', 'reminderId',
+          'direction', 'channel', 'tone', 'content', 'status', 'providerMessageId',
+          'detectedIntent', 'promiseDate', 'createdAt'
+        ]) &&
+        isValidId(data.tenantId) && data.tenantId == tenantId &&
+        (!('debtId' in data) || (data.debtId is string && data.debtId.size() <= 128)) &&
+        isValidId(data.debtorId) &&
+        data.debtorName is string && data.debtorName.size() >= 1 && data.debtorName.size() <= 120 &&
+        data.debtorPhone is string && data.debtorPhone.size() <= 20 &&
+        (!('reminderId' in data) || (data.reminderId is string && data.reminderId.size() <= 128)) &&
+        data.direction in ['outbound', 'inbound'] &&
+        data.channel in ['whatsapp', 'sms'] &&
+        (!('tone' in data) || (data.tone is string && data.tone.size() <= 20)) &&
+        data.content is string && data.content.size() >= 1 && data.content.size() <= 1500 &&
+        data.status in ['simule', 'envoyee', 'delivree', 'lue', 'echouee', 'recue'] &&
+        data.providerMessageId is string && data.providerMessageId.size() <= 128 &&
+        data.detectedIntent in ['opt_out', 'promise', 'none'] &&
+        (!('promiseDate' in data) || (data.promiseDate is string && data.promiseDate.size() <= 30)) &&
+        data.createdAt is timestamp;
+    }
+
+    // =========================================================================
+    // REGLES PAR COLLECTION (Phase 6 - Production)
+    // =========================================================================
+
+    match /userProfiles/{userId} {
+      allow get: if isVerified() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isVerified() && isValidId(userId) && request.auth.uid == userId &&
+        isValidUserProfile(incoming()) &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/tenants/$(incoming().tenantId)/users/$(userId));
+      allow update: if isVerified() && isValidId(userId) && request.auth.uid == userId &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'tenantId', 'role', 'updatedAt']) &&
+        exists(/databases/$(database)/documents/tenants/$(incoming().tenantId)/users/$(userId));
+      allow delete: if false;
+    }
+
+    match /tenantInvites/{inviteId} {
+      allow get: if isVerified() && isValidId(inviteId) &&
+        (existing().email == request.auth.token.email || isTenantOwner(existing().tenantId));
+      allow list: if isVerified() &&
+        (resource.data.email == request.auth.token.email || resource.data.invitedBy == request.auth.uid);
+      allow create: if isVerified() && isValidId(inviteId) &&
+        isValidTenantInvite(incoming()) &&
+        incoming().status == 'pending' &&
+        incoming().invitedBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        isTenantOwner(incoming().tenantId);
+      allow update: if isVerified() && isValidId(inviteId) &&
+        isValidTenantInvite(incoming()) &&
+        incoming().tenantId == existing().tenantId &&
+        incoming().email == existing().email &&
+        incoming().invitedBy == existing().invitedBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+        (
+          (existing().email == request.auth.token.email && existing().status == 'pending' && incoming().status == 'accepted') ||
+          (isTenantOwner(existing().tenantId) && incoming().status == 'revoked')
+        );
+      allow delete: if isVerified() && isValidId(inviteId) && isTenantOwner(existing().tenantId);
+    }
+
+    match /tenants/{tenantId} {
+      allow get: if isValidId(tenantId) && isTenantMember(tenantId);
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(tenantId) &&
+        isValidTenant(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().plan == 'free' &&
+        incoming().maxDebtors == 5 &&
+        incoming().maxRemindersPerMonth == 30 &&
+        incoming().remindersUsedThisMonth == 0 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        getAfter(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid)).data.role == 'owner';
+      allow update: if isVerified() && isValidId(tenantId) &&
+        isValidTenant(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (isTenantOwner(tenantId) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'sector', 'phone', 'email', 'quietHoursStart', 'quietHoursEnd',
+            'autoEscalate', 'fallbackToSms', 'updatedAt'
+          ])) ||
+          (isTenantOwner(tenantId) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'plan', 'maxDebtors', 'maxRemindersPerMonth', 'subscriptionDate', 'updatedAt'
+          ])) ||
+          (isTenantMember(tenantId) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'remindersUsedThisMonth', 'quotaResetMonth', 'updatedAt'
+          ]) && incoming().remindersUsedThisMonth <= incoming().maxRemindersPerMonth)
+        );
+      allow delete: if false;
+
+      match /users/{userId} {
+        allow get: if isValidId(tenantId) && isValidId(userId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create: if isVerified() && isValidId(tenantId) && isValidId(userId) &&
+          isValidTenantUser(incoming(), tenantId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          (
+            (userId == request.auth.uid && incoming().uid == request.auth.uid && incoming().role == 'owner' &&
+              getAfter(/databases/$(database)/documents/tenants/$(tenantId)).data.ownerId == request.auth.uid) ||
+            (userId == request.auth.uid && incoming().uid == request.auth.uid && incoming().role == 'staff' &&
+              'inviteId' in incoming() &&
+              exists(/databases/$(database)/documents/tenantInvites/$(incoming().inviteId)) &&
+              get(/databases/$(database)/documents/tenantInvites/$(incoming().inviteId)).data.email == request.auth.token.email &&
+              get(/databases/$(database)/documents/tenantInvites/$(incoming().inviteId)).data.tenantId == tenantId &&
+              get(/databases/$(database)/documents/tenantInvites/$(incoming().inviteId)).data.status == 'pending')
+          );
+        allow update: if isVerified() && isValidId(tenantId) && isValidId(userId) &&
+          isValidTenantUser(incoming(), tenantId) &&
+          incoming().tenantId == existing().tenantId &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isTenantOwner(tenantId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'status', 'updatedAt']);
+        allow delete: if isValidId(tenantId) && isValidId(userId) && isTenantOwner(tenantId) && userId != request.auth.uid;
+      }
+
+      match /debtors/{debtorId} {
+        allow get: if isValidId(tenantId) && isValidId(debtorId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create: if isValidId(tenantId) && isValidId(debtorId) &&
+          isValidDebtor(incoming(), tenantId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isTenantMember(tenantId);
+        allow update: if isValidId(tenantId) && isValidId(debtorId) &&
+          isValidDebtor(incoming(), tenantId) &&
+          incoming().tenantId == existing().tenantId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isTenantMember(tenantId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'phone', 'preferredChannel', 'note', 'optOut', 'reliabilityScore', 'promiseDate', 'updatedAt'
+          ]);
+        allow delete: if isValidId(tenantId) && isValidId(debtorId) && isTenantOwner(tenantId);
+      }
+
+      match /debts/{debtId} {
+        allow get: if isValidId(tenantId) && isValidId(debtId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create: if isValidId(tenantId) && isValidId(debtId) &&
+          isValidDebt(incoming(), tenantId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isTenantMember(tenantId) &&
+          exists(/databases/$(database)/documents/tenants/$(tenantId)/debtors/$(incoming().debtorId));
+        allow update: if isValidId(tenantId) && isValidId(debtId) &&
+          isValidDebt(incoming(), tenantId) &&
+          incoming().tenantId == existing().tenantId &&
+          incoming().debtorId == existing().debtorId &&
+          incoming().initialAmount == existing().initialAmount &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          existing().status != 'payee' &&
+          existing().status != 'annulee' &&
+          isTenantMember(tenantId) &&
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'remainingAmount', 'status', 'dueDate', 'description', 'paymentLink', 'updatedAt'
+            ]) ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'reminderCount', 'lastReminderAt', 'paymentLink', 'status', 'updatedAt'
+            ])
+          );
+        allow delete: if isValidId(tenantId) && isValidId(debtId) && isTenantOwner(tenantId);
+      }
+
+      match /payments/{paymentId} {
+        allow get: if isValidId(tenantId) && isValidId(paymentId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create: if isValidId(tenantId) && isValidId(paymentId) &&
+          isValidPayment(incoming(), tenantId) &&
+          incoming().createdAt == request.time &&
+          isTenantMember(tenantId) &&
+          exists(/databases/$(database)/documents/tenants/$(tenantId)/debts/$(incoming().debtId));
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      match /reminderRules/{ruleId} {
+        allow get: if isValidId(tenantId) && isValidId(ruleId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create: if isValidId(tenantId) && isValidId(ruleId) &&
+          isValidReminderRule(incoming(), tenantId) &&
+          incoming().updatedAt == request.time &&
+          isTenantOwner(tenantId);
+        allow update: if isValidId(tenantId) && isValidId(ruleId) &&
+          isValidReminderRule(incoming(), tenantId) &&
+          incoming().tenantId == existing().tenantId &&
+          incoming().updatedAt == request.time &&
+          isTenantOwner(tenantId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'offsetDays', 'label', 'channel', 'tone', 'allowedStartHour', 'allowedEndHour', 'maxReminders', 'enabled', 'updatedAt'
+          ]);
+        allow delete: if isValidId(tenantId) && isValidId(ruleId) && isTenantOwner(tenantId);
+      }
+
+      match /messageTemplates/{templateId} {
+        allow get: if isValidId(tenantId) && isValidId(templateId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create: if isValidId(tenantId) && isValidId(templateId) &&
+          isValidMessageTemplate(incoming(), tenantId) &&
+          incoming().updatedAt == request.time &&
+          isTenantOwner(tenantId);
+        allow update: if isValidId(tenantId) && isValidId(templateId) &&
+          isValidMessageTemplate(incoming(), tenantId) &&
+          incoming().tenantId == existing().tenantId &&
+          incoming().updatedAt == request.time &&
+          isTenantOwner(tenantId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['body', 'metaTemplateName', 'updatedAt']);
+        allow delete: if isValidId(tenantId) && isValidId(templateId) && isTenantOwner(tenantId);
+      }
+
+      match /reminders/{reminderId} {
+        allow get: if isValidId(tenantId) && isValidId(reminderId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create: if isValidId(tenantId) && isValidId(reminderId) &&
+          isValidReminder(incoming(), tenantId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isTenantMember(tenantId) &&
+          exists(/databases/$(database)/documents/tenants/$(tenantId)/debts/$(incoming().debtId));
+        allow update: if isValidId(tenantId) && isValidId(reminderId) &&
+          isValidReminder(incoming(), tenantId) &&
+          incoming().tenantId == existing().tenantId &&
+          incoming().debtId == existing().debtId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          existing().status != 'annulee' &&
+          isTenantMember(tenantId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'providerMessageId', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /messageLogs/{logId} {
+        allow get: if isValidId(tenantId) && isValidId(logId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create: if isValidId(tenantId) && isValidId(logId) &&
+          isValidMessageLog(incoming(), tenantId) &&
+          incoming().createdAt == request.time &&
+          isTenantMember(tenantId);
+        allow update: if isValidId(tenantId) && isValidId(logId) &&
+          isValidMessageLog(incoming(), tenantId) &&
+          incoming().tenantId == existing().tenantId &&
+          incoming().debtorId == existing().debtorId &&
+          incoming().content == existing().content &&
+          incoming().createdAt == existing().createdAt &&
+          isTenantMember(tenantId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'providerMessageId']);
+        allow delete: if false;
+      }
+    }
+  }
+}

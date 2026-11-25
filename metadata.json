@@ -1,0 +1,8 @@
+{
+  "name": "PayReminder",
+  "description": "Plateforme SaaS de suivi des dettes clients et d'automatisation des relances WhatsApp et SMS pour commerçants et entreprises au Cameroun.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
