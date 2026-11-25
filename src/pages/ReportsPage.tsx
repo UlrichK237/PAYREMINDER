@@ -2,12 +2,15 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import Papa from 'papaparse';
 import { Download, FileText, Mail } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
+import { auth } from '../lib/firebase';
 import { formatDateFr, formatFcfa, getCurrentDoualaMonth, PAYMENT_METHOD_LABELS } from '../utils/formatters';
 import { downloadMonthlyReportPdf } from '../utils/pdfGenerator';
 import { PLANS } from '../utils/plans';
 
 export function ReportsPage() {
+  const { demoMode } = useAuth();
   const { tenant, debts, payments, messageLogs } = useData();
   const [selectedMonth, setSelectedMonth] = useState(getCurrentDoualaMonth());
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
@@ -86,16 +89,22 @@ export function ReportsPage() {
     setSendingEmail(true);
     setEmailStatus(null);
     try {
-      const resp = await fetch('/api/reports/send-monthly', {
+      if (demoMode) {
+        setEmailStatus(`Rapport mensuel simulé pour ${tenant.email} (mode démonstration).`);
+        return;
+      }
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error('Session expirée. Veuillez vous reconnecter.');
+
+      const resp = await fetch('/api/reports/send-tenant-email', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
-          toEmail: tenant.email,
-          tenantName: tenant.name,
-          monthLabel: reportData.monthLabel,
-          totalDue: reportData.totalDue,
-          collectedThisMonth: reportData.collectedThisMonth,
-          recoveryRate: Number(reportData.recoveryRate.toFixed(1)),
+          tenantId: tenant.id,
+          monthKey: selectedMonth,
         }),
       });
       const data = (await resp.json()) as { message?: string; error?: string };

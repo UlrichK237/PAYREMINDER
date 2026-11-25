@@ -9,7 +9,8 @@
     "start": "NODE_ENV=production tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:rules": "npx eslint firestore.rules && npx tsx firestore.rules.test.ts"
   },
   "dependencies": {
     "@firebase/eslint-plugin-security-rules": "^0.0.2",
@@ -20,7 +21,10 @@
     "dotenv": "^17.2.3",
     "eslint": "^10.15.0",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.7.5",
     "firebase": "^13.4.0",
+    "firebase-admin": "^14.5.1",
+    "helmet": "^8.3.0",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",

@@ -3,7 +3,6 @@ import {
   collection,
   deleteDoc,
   doc,
-  increment,
   onSnapshot,
   orderBy,
   query,
@@ -14,7 +13,8 @@ import {
   writeBatch,
   type Timestamp,
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { analyzeInboundMessage } from '../../functions/src/services/whatsapp';
+import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import type {
   Channel,
   Debt,
@@ -109,6 +109,18 @@ function tsToIso(val: unknown): string {
 
 function makeId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Session expirée. Veuillez vous reconnecter.');
+  }
+  const token = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
 }
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
@@ -847,30 +859,25 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const generatePaymentLink: DataContextValue['generatePaymentLink'] = async (debt) => {
     if (!tenant) throw new Error('Entreprise introuvable.');
+    if (demoMode) {
+      const ref = `DEMO-${debt.id.slice(-4).toUpperCase()}-${Date.now().toString().slice(-4)}`;
+      const demoUrl = `${window.location.origin}/dettes?payer=${encodeURIComponent(debt.id)}&ref=${encodeURIComponent(ref)}&montant=${debt.remainingAmount}`;
+      setRawDebts((prev) => prev.map((d) => (d.id === debt.id ? { ...d, paymentLink: demoUrl } : d)));
+      return demoUrl;
+    }
+
+    const headers = await getAuthHeaders();
     const resp = await fetch('/api/payments/create-link', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         tenantId: tenant.id,
         debtId: debt.id,
-        amountFcfa: debt.remainingAmount,
-        customerPhone: debt.debtorPhone,
-        customerName: debt.debtorName,
-        description: debt.description,
       }),
     });
     const data = (await resp.json()) as { paymentUrl?: string; error?: string };
     if (!resp.ok || !data.paymentUrl) {
       throw new Error(data.error || 'Impossible de générer le lien Mobile Money.');
-    }
-
-    if (demoMode) {
-      setRawDebts((prev) => prev.map((d) => (d.id === debt.id ? { ...d, paymentLink: data.paymentUrl } : d)));
-    } else if (debt.status !== 'payee' && debt.status !== 'annulee') {
-      await updateDoc(doc(db, 'tenants', tenant.id, 'debts', debt.id), {
-        paymentLink: data.paymentUrl,
-        updatedAt: serverTimestamp(),
-      });
     }
     return data.paymentUrl;
   };
@@ -909,164 +916,109 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       );
     }
 
-    const daysOverdue = getDaysOverdue(debt.dueDate);
-    const tone: Tone = overrideTone || pickEscalatedTone(daysOverdue, tenant.autoEscalate);
-    const whatsappAllowed = PLANS[tenant.plan].whatsappEnabled;
-    const requestedChannel: Channel =
-      whatsappAllowed ? overrideChannel || debtor.preferredChannel : 'sms';
-
-    const template =
-      messageTemplates.find((t) => t.tone === tone && t.channel === requestedChannel) ||
-      messageTemplates.find((t) => t.tone === tone) ||
-      messageTemplates[0];
-
-    const bodyText = renderTemplateMessage(template?.body || '', {
-      nom: debtor.name,
-      montant_restant: debt.remainingAmount,
-      echeance: debt.dueDate,
-      entreprise: tenant.name,
-    });
-
-    const resp = await fetch('/api/reminders/dispatch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tenantId: tenant.id,
-        debtId: debt.id,
-        debtorName: debtor.name,
-        debtorPhone: debtor.phone,
-        channel: requestedChannel,
-        tone,
-        messageBody: bodyText,
-        metaTemplateName: template?.metaTemplateName,
-        templateVariables: [debtor.name, String(debt.remainingAmount), debt.dueDate, tenant.name],
-        fallbackToSms: tenant.fallbackToSms,
-        remainingAmount: debt.remainingAmount,
-        tenantPlan: tenant.plan,
-      }),
-    });
-
-    const dispatchRes = (await resp.json()) as {
-      ok: boolean;
-      channel: Channel;
-      usedFallback: boolean;
-      status: 'simule' | 'envoyee' | 'echouee';
-      providerMessageId: string;
-      paymentUrl?: string;
-      renderedContent: string;
-      errorMessage?: string;
-    };
-
-    if (!resp.ok) {
-      throw new Error(dispatchRes.errorMessage || 'Échec de l’envoi de la relance.');
-    }
-
-    const remId = makeId('rem');
-    const logId = makeId('log');
-    const nowIso = new Date().toISOString();
-
-    const newReminder: Reminder = {
-      id: remId,
-      tenantId: tenant.id,
-      debtId: debt.id,
-      debtorId: debtor.id,
-      scheduledAt: nowIso,
-      channel: dispatchRes.channel,
-      tone,
-      status: dispatchRes.status === 'echouee' ? 'echouee' : 'envoyee',
-      providerMessageId: dispatchRes.providerMessageId,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
-
-    const newLog: MessageLog = {
-      id: logId,
-      tenantId: tenant.id,
-      debtId: debt.id,
-      debtorId: debtor.id,
-      debtorName: debtor.name,
-      debtorPhone: debtor.phone,
-      reminderId: remId,
-      direction: 'outbound',
-      channel: dispatchRes.channel,
-      tone,
-      content: dispatchRes.renderedContent,
-      status: dispatchRes.status,
-      providerMessageId: dispatchRes.providerMessageId,
-      detectedIntent: 'none',
-      createdAt: nowIso,
-    };
-
     if (demoMode) {
-      setReminders((prev) => [newReminder, ...prev]);
-      setMessageLogs((prev) => [newLog, ...prev]);
+      const daysOverdue = getDaysOverdue(debt.dueDate);
+      const tone: Tone = overrideTone || pickEscalatedTone(daysOverdue, tenant.autoEscalate);
+      const whatsappAllowed = PLANS[tenant.plan].whatsappEnabled;
+      const requestedChannel: Channel =
+        whatsappAllowed ? overrideChannel || debtor.preferredChannel : 'sms';
+
+      const template =
+        messageTemplates.find((t) => t.tone === tone && t.channel === requestedChannel) ||
+        messageTemplates.find((t) => t.tone === tone) ||
+        messageTemplates[0];
+
+      const bodyText = renderTemplateMessage(template?.body || '', {
+        nom: debtor.name,
+        montant_restant: debt.remainingAmount,
+        echeance: debt.dueDate,
+        entreprise: tenant.name,
+      });
+
+      const remId = makeId('rem');
+      const logId = makeId('log');
+      const nowIso = new Date().toISOString();
+      const simId = `sim_${requestedChannel}_${Date.now()}`;
+
+      setReminders((prev) => [
+        {
+          id: remId,
+          tenantId: tenant.id,
+          debtId: debt.id,
+          debtorId: debtor.id,
+          scheduledAt: nowIso,
+          channel: requestedChannel,
+          tone,
+          status: 'envoyee',
+          providerMessageId: simId,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        },
+        ...prev,
+      ]);
+      setMessageLogs((prev) => [
+        {
+          id: logId,
+          tenantId: tenant.id,
+          debtId: debt.id,
+          debtorId: debtor.id,
+          debtorName: debtor.name,
+          debtorPhone: debtor.phone,
+          reminderId: remId,
+          direction: 'outbound',
+          channel: requestedChannel,
+          tone,
+          content: bodyText,
+          status: 'simule',
+          providerMessageId: simId,
+          detectedIntent: 'none',
+          createdAt: nowIso,
+        },
+        ...prev,
+      ]);
       setRawDebts((prev) =>
         prev.map((d) =>
           d.id === debt.id
-            ? {
-                ...d,
-                reminderCount: d.reminderCount + 1,
-                lastReminderAt: nowIso,
-                paymentLink: dispatchRes.paymentUrl || d.paymentLink,
-                updatedAt: nowIso,
-              }
+            ? { ...d, reminderCount: d.reminderCount + 1, lastReminderAt: nowIso, updatedAt: nowIso }
             : d
         )
       );
       setTenant((prev) =>
         prev ? { ...prev, remindersUsedThisMonth: prev.remindersUsedThisMonth + 1 } : prev
       );
-      return { status: dispatchRes.status, channel: dispatchRes.channel, usedFallback: dispatchRes.usedFallback };
+      return { status: 'simule', channel: requestedChannel, usedFallback: false };
     }
 
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'tenants', tenant.id, 'reminders', remId), {
-      tenantId: tenant.id,
-      debtId: newReminder.debtId,
-      debtorId: newReminder.debtorId,
-      scheduledAt: newReminder.scheduledAt,
-      channel: newReminder.channel,
-      tone: newReminder.tone,
-      status: newReminder.status,
-      providerMessageId: newReminder.providerMessageId,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    batch.set(doc(db, 'tenants', tenant.id, 'messageLogs', logId), {
-      tenantId: tenant.id,
-      debtId: newLog.debtId,
-      debtorId: newLog.debtorId,
-      debtorName: newLog.debtorName,
-      debtorPhone: newLog.debtorPhone,
-      reminderId: remId,
-      direction: 'outbound',
-      channel: newLog.channel,
-      tone: newLog.tone,
-      content: newLog.content,
-      status: newLog.status,
-      providerMessageId: newLog.providerMessageId,
-      detectedIntent: 'none',
-      createdAt: serverTimestamp(),
-    });
-    batch.update(doc(db, 'tenants', tenant.id, 'debts', debt.id), {
-      reminderCount: increment(1),
-      lastReminderAt: nowIso,
-      ...(dispatchRes.paymentUrl ? { paymentLink: dispatchRes.paymentUrl } : {}),
-      status: debt.status,
-      updatedAt: serverTimestamp(),
-    });
-    batch.update(doc(db, 'tenants', tenant.id), {
-      remindersUsedThisMonth: increment(1),
-      quotaResetMonth: getCurrentDoualaMonth(),
-      updatedAt: serverTimestamp(),
+    const headers = await getAuthHeaders();
+    const resp = await fetch('/api/reminders/dispatch', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        tenantId: tenant.id,
+        debtId: debt.id,
+        ...(overrideChannel ? { channel: overrideChannel } : {}),
+        ...(overrideTone ? { tone: overrideTone } : {}),
+      }),
     });
 
-    try {
-      await batch.commit();
-      return { status: dispatchRes.status, channel: dispatchRes.channel, usedFallback: dispatchRes.usedFallback };
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `tenants/${tenant.id}/reminders/${remId}`);
+    const dispatchRes = (await resp.json()) as {
+      ok?: boolean;
+      channel?: Channel;
+      usedFallback?: boolean;
+      status?: 'simule' | 'envoyee' | 'echouee';
+      error?: string;
+      errorMessage?: string;
+    };
+
+    if (!resp.ok) {
+      throw new Error(dispatchRes.error || dispatchRes.errorMessage || 'Échec de l’envoi de la relance.');
     }
+
+    return {
+      status: dispatchRes.status || 'envoyee',
+      channel: dispatchRes.channel || 'sms',
+      usedFallback: Boolean(dispatchRes.usedFallback),
+    };
   };
 
   const sendBulkOverdueReminders: DataContextValue['sendBulkOverdueReminders'] = async (debtIds) => {
@@ -1088,24 +1040,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     messageText,
   }) => {
     if (!tenant) throw new Error('Entreprise introuvable.');
-    const resp = await fetch('/api/webhooks/whatsapp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fromPhone, messageText }),
-    });
-    const res = (await resp.json()) as { intent: 'opt_out' | 'promise' | 'none'; promiseDate: string | null };
 
     const matchedDebtor = debtors.find((d) => d.phone === fromPhone) || debtors[0];
     if (!matchedDebtor) throw new Error('Aucun débiteur correspondant.');
 
-    const logId = makeId('log_in');
-    const nowIso = new Date().toISOString();
-    const newNote =
-      res.intent === 'promise' && res.promiseDate
-        ? `${matchedDebtor.note ? `${matchedDebtor.note} | ` : ''}Promesse (${res.promiseDate}) : ${messageText}`.slice(0, 500)
-        : matchedDebtor.note;
-
     if (demoMode) {
+      const res = analyzeInboundMessage(messageText);
+      const logId = makeId('log_in');
+      const nowIso = new Date().toISOString();
+      const newNote =
+        res.intent === 'promise' && res.promiseDate
+          ? `${matchedDebtor.note ? `${matchedDebtor.note} | ` : ''}Promesse (${res.promiseDate}) : ${messageText}`.slice(0, 500)
+          : matchedDebtor.note;
+
       setDebtors((prev) =>
         prev.map((d) =>
           d.id === matchedDebtor.id
@@ -1137,8 +1084,28 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         },
         ...prev,
       ]);
-      return res;
+      return { intent: res.intent, promiseDate: res.promiseDate || null };
     }
+
+    const resp = await fetch('/api/webhooks/whatsapp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromPhone, messageText }),
+    });
+    const res = (await resp.json()) as {
+      intent?: 'opt_out' | 'promise' | 'none';
+      promiseDate?: string | null;
+      error?: string;
+    };
+    if (!resp.ok || !res.intent) {
+      throw new Error(res.error || 'Webhook WhatsApp refusé par le serveur.');
+    }
+
+    const logId = makeId('log_in');
+    const newNote =
+      res.intent === 'promise' && res.promiseDate
+        ? `${matchedDebtor.note ? `${matchedDebtor.note} | ` : ''}Promesse (${res.promiseDate}) : ${messageText}`.slice(0, 500)
+        : matchedDebtor.note;
 
     const batch = writeBatch(db);
     batch.set(doc(db, 'tenants', tenant.id, 'messageLogs', logId), {
@@ -1171,7 +1138,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
     try {
       await batch.commit();
-      return res;
+      return { intent: res.intent, promiseDate: res.promiseDate || null };
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `tenants/${tenant.id}/messageLogs/${logId}`);
     }
@@ -1182,18 +1149,33 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     amount,
     method,
   }) => {
+    if (!tenant) throw new Error('Entreprise introuvable.');
+    if (demoMode) {
+      await recordPayment({
+        debtId,
+        amount,
+        method,
+        note: 'Paiement confirmé via webhook Mobile Money',
+      });
+      return;
+    }
+
+    const transactionRef = `SIM-${debtId.slice(-6).toUpperCase()}-${Date.now()}`;
     const resp = await fetch('/api/webhooks/payment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ debtId, amount, method }),
+      body: JSON.stringify({
+        tenantId: tenant.id,
+        debtId,
+        amount,
+        method,
+        transactionRef,
+      }),
     });
-    if (!resp.ok) throw new Error('Erreur webhook Mobile Money.');
-    await recordPayment({
-      debtId,
-      amount,
-      method,
-      note: 'Paiement confirmé via webhook Mobile Money',
-    });
+    const data = (await resp.json()) as { ok?: boolean; error?: string };
+    if (!resp.ok) {
+      throw new Error(data.error || 'Erreur webhook Mobile Money.');
+    }
   };
 
   // ===========================================================================
@@ -1327,16 +1309,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       );
       return;
     }
-    try {
-      await updateDoc(doc(db, 'tenants', tenant.id), {
-        plan: planId,
-        maxDebtors: target.maxDebtors,
-        maxRemindersPerMonth: target.maxRemindersPerMonth,
-        subscriptionDate: nowIso,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `tenants/${tenant.id}`);
+
+    const headers = await getAuthHeaders();
+    const resp = await fetch('/api/billing/change-plan', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        tenantId: tenant.id,
+        planId,
+      }),
+    });
+    const data = (await resp.json()) as { ok?: boolean; error?: string };
+    if (!resp.ok) {
+      throw new Error(data.error || 'Changement de forfait refusé.');
     }
   };
 
@@ -1348,18 +1333,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     if (!tenant || !user) return;
     const ds = key === 'ecole' ? buildEcoleDemoDataset(user.uid) : buildPagnesDemoDataset(user.uid);
 
-    // Passe au plan Business/Pro pour pouvoir accueillir 30 élèves si nécessaire
-    const targetPlan = ds.debtors.length > 50 ? 'business' : 'pro';
-    const planDef = PLANS[targetPlan];
-
     const batch = writeBatch(db);
-    batch.update(doc(db, 'tenants', tenant.id), {
-      plan: targetPlan,
-      maxDebtors: planDef.maxDebtors,
-      maxRemindersPerMonth: planDef.maxRemindersPerMonth,
-      subscriptionDate: new Date().toISOString(),
-      updatedAt: serverTimestamp(),
-    });
 
     for (const d of ds.debtors) {
       batch.set(doc(db, 'tenants', tenant.id, 'debtors', d.id), {

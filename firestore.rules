@@ -346,18 +346,11 @@ service cloud.firestore {
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        (
-          (isTenantOwner(tenantId) && incoming().diff(existing()).affectedKeys().hasOnly([
-            'name', 'sector', 'phone', 'email', 'quietHoursStart', 'quietHoursEnd',
-            'autoEscalate', 'fallbackToSms', 'updatedAt'
-          ])) ||
-          (isTenantOwner(tenantId) && incoming().diff(existing()).affectedKeys().hasOnly([
-            'plan', 'maxDebtors', 'maxRemindersPerMonth', 'subscriptionDate', 'updatedAt'
-          ])) ||
-          (isTenantMember(tenantId) && incoming().diff(existing()).affectedKeys().hasOnly([
-            'remindersUsedThisMonth', 'quotaResetMonth', 'updatedAt'
-          ]) && incoming().remindersUsedThisMonth <= incoming().maxRemindersPerMonth)
-        );
+        isTenantOwner(tenantId) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'sector', 'phone', 'email', 'quietHoursStart', 'quietHoursEnd',
+          'autoEscalate', 'fallbackToSms', 'updatedAt'
+        ]);
       allow delete: if false;
 
       match /users/{userId} {
@@ -456,7 +449,7 @@ service cloud.firestore {
         allow create: if isValidId(tenantId) && isValidId(ruleId) &&
           isValidReminderRule(incoming(), tenantId) &&
           incoming().updatedAt == request.time &&
-          isTenantOwner(tenantId);
+          isTenantOwnerAfter(tenantId);
         allow update: if isValidId(tenantId) && isValidId(ruleId) &&
           isValidReminderRule(incoming(), tenantId) &&
           incoming().tenantId == existing().tenantId &&
@@ -465,7 +458,7 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly([
             'offsetDays', 'label', 'channel', 'tone', 'allowedStartHour', 'allowedEndHour', 'maxReminders', 'enabled', 'updatedAt'
           ]);
-        allow delete: if isValidId(tenantId) && isValidId(ruleId) && isTenantOwnerAfter(tenantId);
+        allow delete: if isValidId(tenantId) && isValidId(ruleId) && isTenantOwner(tenantId);
       }
 
       match /messageTemplates/{templateId} {
@@ -474,7 +467,7 @@ service cloud.firestore {
         allow create: if isValidId(tenantId) && isValidId(templateId) &&
           isValidMessageTemplate(incoming(), tenantId) &&
           incoming().updatedAt == request.time &&
-          isTenantOwner(tenantId);
+          isTenantOwnerAfter(tenantId);
         allow update: if isValidId(tenantId) && isValidId(templateId) &&
           isValidMessageTemplate(incoming(), tenantId) &&
           incoming().tenantId == existing().tenantId &&
