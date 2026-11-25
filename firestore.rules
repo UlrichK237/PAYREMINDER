@@ -51,6 +51,12 @@ service cloud.firestore {
         get(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid)).data.role == 'owner';
     }
 
+    function isTenantOwnerAfter(tenantId) {
+      return isVerified() &&
+        existsAfter(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid)) &&
+        getAfter(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid)).data.role == 'owner';
+    }
+
     // =========================================================================
     // VALIDATION BLUEPRINTS (Pillar 2 - Anti-Update-Gap)
     // =========================================================================
@@ -459,7 +465,7 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly([
             'offsetDays', 'label', 'channel', 'tone', 'allowedStartHour', 'allowedEndHour', 'maxReminders', 'enabled', 'updatedAt'
           ]);
-        allow delete: if isValidId(tenantId) && isValidId(ruleId) && isTenantOwner(tenantId);
+        allow delete: if isValidId(tenantId) && isValidId(ruleId) && isTenantOwnerAfter(tenantId);
       }
 
       match /messageTemplates/{templateId} {
