@@ -1,6 +1,6 @@
 /**
  * Interface abstraite SmsProvider pour brancher tout agrégateur SMS camerounais
- * (Camoo, Nexah, Orange SMS API, MboaSMS, Twilio, etc.) sans modifier le moteur de relances.
+ * (Camoo, Nexah, Orange SMS API, MboaSMS, Twilio, etc.).
  */
 export interface SmsSendPayload {
   to: string;
@@ -21,9 +21,6 @@ export interface SmsProvider {
   sendSms(payload: SmsSendPayload): Promise<SmsSendResult>;
 }
 
-/**
- * Implémentation HTTP générique compatible avec la majorité des passerelles SMS REST.
- */
 export class HttpSmsProvider implements SmsProvider {
   readonly name = 'HttpGenericCameroonSms';
   private readonly endpointUrl: string;
@@ -82,13 +79,10 @@ export class HttpSmsProvider implements SmsProvider {
   }
 }
 
-/**
- * Implémentation de simulation activée automatiquement lorsqu'aucune clé SMS n'est configurée.
- */
 export class SimulatedSmsProvider implements SmsProvider {
   readonly name = 'SimulatedSmsProvider';
 
-  async sendSms(payload: SmsSendPayload): Promise<SmsSendResult> {
+  async sendSms(_payload: SmsSendPayload): Promise<SmsSendResult> {
     return {
       success: true,
       simulated: true,

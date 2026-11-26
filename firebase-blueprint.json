@@ -117,6 +117,9 @@
         "maxRemindersPerMonth": {
           "type": "integer"
         },
+        "maxRemindersPerDay": {
+          "type": "integer"
+        },
         "remindersUsedThisMonth": {
           "type": "integer"
         },
@@ -126,6 +129,21 @@
           "pattern": "^[0-9]{4}-[0-9]{2}$"
         },
         "subscriptionDate": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "planExpiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "planStatus": {
+          "type": "string",
+          "enum": ["active", "grace", "expired"],
+          "maxLength": 20
+        },
+        "lastPaymentAt": {
           "type": "string",
           "format": "date-time",
           "maxLength": 40
@@ -272,6 +290,15 @@
           "type": "string",
           "maxLength": 20
         },
+        "consentConfirmedAt": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "consentConfirmedBy": {
+          "type": "string",
+          "maxLength": 128
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -283,7 +310,7 @@
           "maxLength": 40
         }
       },
-      "required": ["tenantId", "name", "phone", "preferredChannel", "note", "optOut", "reliabilityScore", "createdAt", "updatedAt"]
+      "required": ["tenantId", "name", "phone", "preferredChannel", "note", "optOut", "reliabilityScore", "consentConfirmedAt", "consentConfirmedBy", "createdAt", "updatedAt"]
     },
     "Debt": {
       "title": "Debt",
@@ -643,6 +670,94 @@
         }
       },
       "required": ["tenantId", "debtorId", "debtorName", "debtorPhone", "direction", "channel", "content", "status", "providerMessageId", "detectedIntent", "createdAt"]
+    },
+    "PaymentAnomaly": {
+      "title": "PaymentAnomaly",
+      "description": "Trop-perçu ou paiement webhook irrécupérable enregistré pour traitement manuel.",
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string", "maxLength": 128 },
+        "debtId": { "type": "string", "maxLength": 128 },
+        "transactionRef": { "type": "string", "maxLength": 160 },
+        "type": { "type": "string", "enum": ["overpayment", "unrecoverable"], "maxLength": 32 },
+        "receivedAmount": { "type": "integer" },
+        "appliedAmount": { "type": "integer" },
+        "excessAmount": { "type": "integer" },
+        "method": { "type": "string", "maxLength": 20 },
+        "reason": { "type": "string", "maxLength": 300 },
+        "status": { "type": "string", "enum": ["pending_review", "resolved"], "maxLength": 32 },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["tenantId", "debtId", "transactionRef", "type", "receivedAmount", "appliedAmount", "excessAmount", "status", "createdAt"]
+    },
+    "TenantSecurity": {
+      "title": "TenantSecurity",
+      "description": "État de sécurité serveur par entreprise (quotas journaliers et vérification SMS propriétaire).",
+      "type": "object",
+      "properties": {
+        "phoneVerified": { "type": "boolean" },
+        "verifiedPhone": { "type": "string", "maxLength": 20 },
+        "phoneVerifiedAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "dailyUsage": {
+          "type": "object",
+          "properties": {
+            "date": { "type": "string", "maxLength": 10 },
+            "count": { "type": "integer" }
+          }
+        },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      }
+    },
+    "BillingRecord": {
+      "title": "BillingRecord",
+      "description": "Paiement d'abonnement SaaS géré exclusivement par le serveur.",
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string", "maxLength": 128 },
+        "planId": { "type": "string", "enum": ["starter", "pro", "business"], "maxLength": 20 },
+        "amountFcfa": { "type": "integer" },
+        "status": { "type": "string", "enum": ["pending", "paid", "failed"], "maxLength": 20 },
+        "paymentRef": { "type": "string", "maxLength": 128 },
+        "paymentUrl": { "type": "string", "maxLength": 300 },
+        "receiptNumber": { "type": "string", "maxLength": 40 },
+        "transactionRef": { "type": "string", "maxLength": 160 },
+        "method": { "type": "string", "maxLength": 20 },
+        "paidAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["tenantId", "planId", "amountFcfa", "status", "paymentRef", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CronLock": {
+      "title": "CronLock",
+      "description": "Verrou anti-double exécution des tâches planifiées (serveur uniquement).",
+      "type": "object",
+      "properties": {
+        "job": { "type": "string", "maxLength": 60 },
+        "slotKey": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["job", "slotKey", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Journal d'audit des actions sensibles (écriture serveur uniquement, lecture propriétaire).",
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string", "maxLength": 128 },
+        "action": {
+          "type": "string",
+          "enum": ["plan_change", "subscription_payment", "manual_reminder", "debtor_erase", "phone_verified"],
+          "maxLength": 40
+        },
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "summary": { "type": "string", "maxLength": 300 },
+        "metadata": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["tenantId", "action", "actorUid", "summary", "createdAt"]
     }
   },
   "firestore": {
@@ -653,6 +768,14 @@
     "/tenantInvites/{inviteId}": {
       "schema": { "$ref": "#/entities/TenantInvite" },
       "description": "Invitations du personnel par email."
+    },
+    "/tenantSecurity/{tenantId}": {
+      "schema": { "$ref": "#/entities/TenantSecurity" },
+      "description": "Compteurs journaliers anti-harcèlement et statut de vérification téléphone (écriture serveur uniquement)."
+    },
+    "/cronLocks/{lockId}": {
+      "schema": { "$ref": "#/entities/CronLock" },
+      "description": "Verrous anti-double exécution des crons (lecture/écriture serveur uniquement)."
     },
     "/tenants/{tenantId}": {
       "schema": { "$ref": "#/entities/Tenant" },
@@ -674,6 +797,14 @@
       "schema": { "$ref": "#/entities/Payment" },
       "description": "Paiements enregistrés."
     },
+    "/tenants/{tenantId}/paymentAnomalies/{anomalyId}": {
+      "schema": { "$ref": "#/entities/PaymentAnomaly" },
+      "description": "Trop-perçus et anomalies webhook paiement."
+    },
+    "/tenants/{tenantId}/billing/{paymentRef}": {
+      "schema": { "$ref": "#/entities/BillingRecord" },
+      "description": "Paiements et factures d'abonnement (lecture propriétaire uniquement)."
+    },
     "/tenants/{tenantId}/reminderRules/{ruleId}": {
       "schema": { "$ref": "#/entities/ReminderRule" },
       "description": "Règles de relance automatiques."
@@ -689,6 +820,10 @@
     "/tenants/{tenantId}/messageLogs/{logId}": {
       "schema": { "$ref": "#/entities/MessageLog" },
       "description": "Journal complet des échanges et conformité."
+    },
+    "/tenants/{tenantId}/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Journal d'activité des actions sensibles (lecture propriétaire uniquement)."
     }
   }
 }

@@ -8,6 +8,8 @@ export type ReminderStatus = 'planifiee' | 'envoyee' | 'delivree' | 'lue' | 'ech
 export type MessageLogStatus = 'simule' | 'envoyee' | 'delivree' | 'lue' | 'echouee' | 'recue';
 export type DetectedIntent = 'opt_out' | 'promise' | 'none';
 
+export type PlanStatus = 'active' | 'grace' | 'expired';
+
 export interface Tenant {
   id: string;
   name: string;
@@ -17,15 +19,36 @@ export interface Tenant {
   plan: PlanId;
   maxDebtors: number;
   maxRemindersPerMonth: number;
+  maxRemindersPerDay?: number;
   remindersUsedThisMonth: number;
   quotaResetMonth: string; // YYYY-MM
   subscriptionDate: string;
+  planExpiresAt?: string;
+  planStatus?: PlanStatus;
+  lastPaymentAt?: string;
   quietHoursStart: number; // ex: 20 (20h00)
   quietHoursEnd: number;   // ex: 7  (07h00)
   timezone: string;        // 'Africa/Douala'
   autoEscalate: boolean;
   fallbackToSms: boolean;
   ownerId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BillingRecord {
+  id: string;
+  tenantId: string;
+  planId: PlanId;
+  amountFcfa: number;
+  status: 'pending' | 'paid' | 'failed';
+  paymentRef: string;
+  paymentUrl?: string;
+  receiptNumber?: string;
+  transactionRef?: string;
+  method?: string;
+  paidAt?: string;
+  createdBy: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -74,8 +97,28 @@ export interface Debtor {
   optOut: boolean;
   reliabilityScore: number; // 0-100
   promiseDate?: string;
+  consentConfirmedAt?: string;
+  consentConfirmedBy?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type AuditLogAction =
+  | 'plan_change'
+  | 'subscription_payment'
+  | 'manual_reminder'
+  | 'debtor_erase'
+  | 'phone_verified';
+
+export interface AuditLogEntry {
+  id: string;
+  tenantId: string;
+  action: AuditLogAction;
+  actorUid: string;
+  targetId?: string;
+  summary: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface Debt {
@@ -176,6 +219,7 @@ export interface PlanDefinition {
   priceFcfa: number;
   maxDebtors: number;
   maxRemindersPerMonth: number;
+  maxRemindersPerDay: number;
   whatsappEnabled: boolean;
   reportsEnabled: boolean;
   multiUserEnabled: boolean;

@@ -118,6 +118,16 @@ export function Layout({ children, onQuickNewDebt }: LayoutProps) {
               <span>Quitter</span>
             </button>
           </div>
+
+          <div className="flex items-center gap-3 text-[11px] text-slate-400 dark:text-slate-500 pt-1">
+            <Link to="/legal/cgu" className="hover:text-slate-600 dark:hover:text-slate-300 hover:underline">
+              CGU
+            </Link>
+            <span>·</span>
+            <Link to="/legal/confidentialite" className="hover:text-slate-600 dark:hover:text-slate-300 hover:underline">
+              Confidentialité
+            </Link>
+          </div>
         </div>
       </aside>
 

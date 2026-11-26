@@ -1,10 +1,20 @@
 import React, { useState } from 'react';
-import { KeyRound, ShieldCheck, UserPlus, Users } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { History, KeyRound, PhoneCall, ShieldCheck, UserPlus, Users } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
-import type { Channel, Tone } from '../types/payreminder';
-import { renderTemplateMessage, TONE_LABELS } from '../utils/formatters';
+import type { AuditLogAction, Channel, Tone } from '../types/payreminder';
+import { formatDateTimeFr, renderTemplateMessage, TONE_LABELS } from '../utils/formatters';
 import { PLANS } from '../utils/plans';
+import { validateTemplateBody } from '../utils/templateValidation';
+
+const AUDIT_ACTION_LABELS: Record<AuditLogAction, string> = {
+  plan_change: 'Changement de forfait',
+  subscription_payment: 'Paiement abonnement',
+  manual_reminder: 'Relance manuelle',
+  debtor_erase: 'Effacement RGPD',
+  phone_verified: 'Téléphone vérifié',
+};
 
 export function SettingsPage() {
   const { profile, demoMode } = useAuth();
@@ -14,15 +24,20 @@ export function SettingsPage() {
     teamInvites,
     messageTemplates,
     reminderRules,
+    auditLogs,
     capabilities,
+    phoneVerified,
+    dailyUsage,
     updateTenantSettings,
     updateMessageTemplate,
     updateReminderRule,
     inviteStaffMember,
     revokeInvite,
+    sendPhoneVerificationCode,
+    verifyPhoneVerificationCode,
   } = useData();
 
-  const [tab, setTab] = useState<'company' | 'templates' | 'rules' | 'team' | 'security'>('company');
+  const [tab, setTab] = useState<'company' | 'templates' | 'rules' | 'team' | 'security' | 'audit'>('company');
 
   // Form profil entreprise
   const [name, setName] = useState(tenant?.name || '');
@@ -40,6 +55,12 @@ export function SettingsPage() {
   // Équipe
   const [inviteName, setInviteName] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
+
+  // Vérification téléphone propriétaire
+  const [phoneCodeInput, setPhoneCodeInput] = useState('');
+  const [sendingPhoneCode, setSendingPhoneCode] = useState(false);
+  const [verifyingPhoneCode, setVerifyingPhoneCode] = useState(false);
+  const [devCodeHint, setDevCodeHint] = useState<string | null>(null);
 
   const [feedback, setFeedback] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -69,9 +90,14 @@ export function SettingsPage() {
     }
   };
 
-  const handleSaveTemplate = async (tplId: string, body: string) => {
+  const handleSaveTemplate = async (tplId: string, body: string, channel: Channel) => {
     setFeedback(null);
     setErrorMsg(null);
+    const check = validateTemplateBody(body, channel);
+    if (!check.ok) {
+      setErrorMsg(check.error || 'Modèle de message invalide.');
+      return;
+    }
     try {
       await updateMessageTemplate(tplId, body);
       setFeedback('Modèle de message enregistré.');
@@ -94,6 +120,38 @@ export function SettingsPage() {
     }
   };
 
+  const handleRequestPhoneCode = async () => {
+    setFeedback(null);
+    setErrorMsg(null);
+    setSendingPhoneCode(true);
+    try {
+      const res = await sendPhoneVerificationCode();
+      setDevCodeHint(res.devCode || null);
+      setFeedback(`Code de vérification envoyé par SMS au ${res.phone}.`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Impossible d’envoyer le code SMS.');
+    } finally {
+      setSendingPhoneCode(false);
+    }
+  };
+
+  const handleVerifyPhoneCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFeedback(null);
+    setErrorMsg(null);
+    setVerifyingPhoneCode(true);
+    try {
+      await verifyPhoneVerificationCode(phoneCodeInput);
+      setPhoneCodeInput('');
+      setDevCodeHint(null);
+      setFeedback('Téléphone du propriétaire vérifié avec succès.');
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Code invalide ou expiré.');
+    } finally {
+      setVerifyingPhoneCode(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Onglets */}
@@ -105,6 +163,7 @@ export function SettingsPage() {
             ['rules', 'Règles de relance'],
             ['team', 'Équipe'],
             ['security', 'Clés API & Conformité'],
+            ...(isOwner ? ([['audit', 'Journal d’activité']] as const) : []),
           ] as const
         ).map(([key, label]) => (
           <button
@@ -314,7 +373,7 @@ export function SettingsPage() {
                   {isOwner && (
                     <button
                       type="button"
-                      onClick={() => void handleSaveTemplate(tpl.id, currentBody)}
+                      onClick={() => void handleSaveTemplate(tpl.id, currentBody, tpl.channel)}
                       className="min-h-[40px] px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
                     >
                       Sauvegarder ce modèle
@@ -458,17 +517,82 @@ export function SettingsPage() {
         </div>
       )}
 
-      {/* Tab 5 : Clés API serveur & Conformité */}
+      {/* Tab 5 : Sécurité, Clés API serveur & Conformité */}
       {tab === 'security' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4 lg:col-span-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                <PhoneCall className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
+                <span>Sécurité — Vérification du téléphone du propriétaire</span>
+              </h2>
+              <span
+                className={`text-xs font-semibold ${
+                  phoneVerified
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-amber-600 dark:text-amber-400'
+                }`}
+              >
+                {phoneVerified ? 'Téléphone vérifié' : 'Non vérifié'}
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              Numéro enregistré : <span className="font-num font-semibold text-slate-700 dark:text-slate-200">{tenant.phone}</span> ·{' '}
+              Envois du jour ({dailyUsage.date}) :{' '}
+              <span className="font-num font-semibold text-slate-700 dark:text-slate-200">
+                {dailyUsage.count}/{PLANS[tenant.plan].maxRemindersPerDay}
+              </span>
+              . La vérification par SMS est obligatoire avant tout envoi via un fournisseur réel.
+            </p>
+
+            {isOwner && !phoneVerified && (
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+                <button
+                  type="button"
+                  disabled={sendingPhoneCode}
+                  onClick={() => void handleRequestPhoneCode()}
+                  className="min-h-[42px] px-4 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {sendingPhoneCode ? 'Envoi du code...' : 'Envoyer un code SMS (6 chiffres)'}
+                </button>
+                <form onSubmit={handleVerifyPhoneCode} className="flex items-center gap-2 flex-1 max-w-xs">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    required
+                    value={phoneCodeInput}
+                    onChange={(e) => setPhoneCodeInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                    placeholder="Code à 6 chiffres"
+                    className="w-full min-h-[42px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm font-num"
+                  />
+                  <button
+                    type="submit"
+                    disabled={verifyingPhoneCode || phoneCodeInput.length !== 6}
+                    className="min-h-[42px] px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-50 shrink-0"
+                  >
+                    {verifyingPhoneCode ? 'Validation...' : 'Valider'}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {devCodeHint && (
+              <p className="text-xs text-slate-600 dark:text-slate-300 font-num bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl">
+                Mode simulation développement — code généré : {devCodeHint}
+              </p>
+            )}
+          </div>
+
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4">
             <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
               <KeyRound className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
               <span>État des passerelles serveur (zéro clé côté front)</span>
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-              Les secrets sont lus exclusivement côté serveur dans <code className="font-num">.env</code> (serveur Express) et{' '}
-              <code className="font-num">functions/src/config/env.ts</code> (Cloud Functions).
+              Les secrets sont lus exclusivement côté serveur dans les variables d’environnement de <code className="font-num">server.ts</code>.
             </p>
             <div className="space-y-2.5 text-xs">
               {[
@@ -499,7 +623,67 @@ export function SettingsPage() {
               <li>Journalisation immuable de chaque message et de chaque reçu de paiement dans <code className="font-num">messageLogs</code>.</li>
               <li>Aucun message à caractère menaçant ou abusif dans les modèles par défaut.</li>
             </ul>
+            <div className="pt-2 flex flex-wrap items-center gap-4 text-xs">
+              <Link to="/legal/cgu" className="text-emerald-700 dark:text-emerald-400 hover:underline">
+                Conditions Générales d’Utilisation (CGU)
+              </Link>
+              <Link to="/legal/confidentialite" className="text-emerald-700 dark:text-emerald-400 hover:underline">
+                Politique de confidentialité
+              </Link>
+            </div>
           </div>
+        </div>
+      )}
+
+      {/* Tab 6 : Journal d'activité (Owner-only) */}
+      {tab === 'audit' && isOwner && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+              <History className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
+              <span>Journal d’activité</span>
+            </h2>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              {auditLogs.length} événement(s)
+            </span>
+          </div>
+
+          {auditLogs.length === 0 ? (
+            <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
+              Aucune action sensible enregistrée pour le moment.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                  <tr>
+                    <th className="px-4 py-3">Date (Douala)</th>
+                    <th className="px-4 py-3">Action</th>
+                    <th className="px-4 py-3">Détails</th>
+                    <th className="px-4 py-3">Acteur</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {auditLogs.map((entry) => (
+                    <tr key={entry.id}>
+                      <td className="px-4 py-3 font-num text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                        {formatDateTimeFr(entry.createdAt)}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-900 dark:text-white whitespace-nowrap">
+                        {AUDIT_ACTION_LABELS[entry.action] || entry.action}
+                      </td>
+                      <td className="px-4 py-3 text-slate-700 dark:text-slate-300">
+                        {entry.summary}
+                      </td>
+                      <td className="px-4 py-3 font-num text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                        {entry.actorUid.slice(0, 14)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>

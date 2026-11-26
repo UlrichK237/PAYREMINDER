@@ -17,32 +17,32 @@ export function formatFcfa(amount: number): string {
 /**
  * Retourne la date du jour au format YYYY-MM-DD dans le fuseau Africa/Douala.
  */
-export function getTodayDoualaDate(): string {
+export function getTodayDoualaDate(now = new Date()): string {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: DOUALA_TIMEZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   });
-  return formatter.format(new Date());
+  return formatter.format(now);
 }
 
 /**
  * Retourne le mois courant au format YYYY-MM dans le fuseau Africa/Douala.
  */
-export function getCurrentDoualaMonth(): string {
-  return getTodayDoualaDate().slice(0, 7);
+export function getCurrentDoualaMonth(now = new Date()): string {
+  return getTodayDoualaDate(now).slice(0, 7);
 }
 
 /**
  * Retourne l'heure courante (0-23) dans le fuseau Africa/Douala.
  */
-export function getCurrentDoualaHour(): number {
+export function getCurrentDoualaHour(now = new Date()): number {
   const parts = new Intl.DateTimeFormat('fr-FR', {
     timeZone: DOUALA_TIMEZONE,
     hour: '2-digit',
     hour12: false,
-  }).formatToParts(new Date());
+  }).formatToParts(now);
   const hourPart = parts.find((p) => p.type === 'hour')?.value ?? '12';
   return parseInt(hourPart, 10) % 24;
 }
@@ -94,10 +94,13 @@ export function getDaysOverdue(dueDate: string, referenceDate = getTodayDoualaDa
 /**
  * Calcule le statut effectif d'une dette selon le montant restant et la date d'échéance.
  */
-export function computeDebtStatus(debt: Pick<Debt, 'initialAmount' | 'remainingAmount' | 'dueDate' | 'status'>): DebtStatus {
+export function computeDebtStatus(
+  debt: Pick<Debt, 'initialAmount' | 'remainingAmount' | 'dueDate' | 'status'>,
+  referenceDate = getTodayDoualaDate()
+): DebtStatus {
   if (debt.status === 'annulee') return 'annulee';
   if (debt.remainingAmount <= 0) return 'payee';
-  const daysOverdue = getDaysOverdue(debt.dueDate);
+  const daysOverdue = getDaysOverdue(debt.dueDate, referenceDate);
   if (daysOverdue > 0) return 'en_retard';
   if (debt.remainingAmount < debt.initialAmount) return 'partiellement_payee';
   return 'en_cours';

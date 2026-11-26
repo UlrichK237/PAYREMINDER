@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { CheckCircle2, Download, Link2, Smartphone, X } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import type { Debt, Payment, PaymentMethod } from '../types/payreminder';
 import { formatFcfa, PAYMENT_METHOD_LABELS } from '../utils/formatters';
@@ -11,7 +12,9 @@ interface PaymentModalProps {
 }
 
 export function PaymentModal({ debt, onClose }: PaymentModalProps) {
-  const { tenant, recordPayment, generatePaymentLink, simulatePaymentWebhook } = useData();
+  const { demoMode } = useAuth();
+  const { tenant, capabilities, recordPayment, generatePaymentLink, simulatePaymentWebhook } = useData();
+  const showSimulation = demoMode || capabilities.simulationRoutes;
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState<PaymentMethod>('mtn_momo');
   const [note, setNote] = useState('');
@@ -226,7 +229,7 @@ export function PaymentModal({ debt, onClose }: PaymentModalProps) {
               <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
                 Encaissement à distance Mobile Money
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className={`grid grid-cols-1 ${showSimulation ? 'sm:grid-cols-2' : ''} gap-2`}>
                 <button
                   type="button"
                   onClick={() => void handleCreateMoMoLink()}
@@ -235,15 +238,17 @@ export function PaymentModal({ debt, onClose }: PaymentModalProps) {
                   <Link2 className="w-3.5 h-3.5" />
                   Générer un lien MoMo
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void handleSimulateMoMoWebhook()}
-                  disabled={saving}
-                  className="min-h-[40px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-emerald-700 dark:text-emerald-400 flex items-center justify-center gap-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
-                >
-                  <Smartphone className="w-3.5 h-3.5" />
-                  Simuler webhook payé
-                </button>
+                {showSimulation && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSimulateMoMoWebhook()}
+                    disabled={saving}
+                    className="min-h-[40px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-emerald-700 dark:text-emerald-400 flex items-center justify-center gap-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    Simuler webhook payé
+                  </button>
+                )}
               </div>
               {generatedLink && (
                 <p className="text-[11px] font-num break-all bg-slate-50 dark:bg-slate-950 p-2.5 rounded-lg text-slate-600 dark:text-slate-300">

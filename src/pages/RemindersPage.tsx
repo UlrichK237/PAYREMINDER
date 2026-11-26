@@ -1,11 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { MessageSquare, Send, ShieldCheck } from 'lucide-react';
 import { LogStatusLabel } from '../components/StatusText';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { formatDateTimeFr, TONE_LABELS } from '../utils/formatters';
 
 export function RemindersPage() {
+  const { demoMode } = useAuth();
   const { debtors, messageLogs, capabilities, simulateInboundWhatsapp } = useData();
+  const showSimulation = demoMode || capabilities.simulationRoutes;
   const [channelFilter, setChannelFilter] = useState<'all' | 'whatsapp' | 'sms' | 'inbound'>('all');
   const [simPhone, setSimPhone] = useState('');
   const [simMessage, setSimMessage] = useState('Je paie vendredi par MTN MoMo');
@@ -69,71 +72,73 @@ export function RemindersPage() {
       </div>
 
       {/* Simulateur de réponse WhatsApp entrante (STOP / Promesse de paiement) */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-            Tester le webhook WhatsApp entrant (STOP & Promesses de paiement)
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Essayez d’envoyer « STOP » pour activer l’opt-out ou « Je paie vendredi » pour enregistrer automatiquement une promesse datée.
-          </p>
+      {showSimulation && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+              Tester le webhook WhatsApp entrant (STOP & Promesses de paiement)
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Essayez d’envoyer « STOP » pour activer l’opt-out ou « Je paie vendredi » pour enregistrer automatiquement une promesse datée.
+            </p>
+          </div>
+
+          <form onSubmit={handleSimulateInbound} className="grid grid-cols-1 md:grid-cols-12 gap-3">
+            <div className="md:col-span-4">
+              <select
+                value={selectedPhone}
+                onChange={(e) => setSimPhone(e.target.value)}
+                className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-num"
+              >
+                {debtors.map((d) => (
+                  <option key={d.id} value={d.phone}>
+                    {d.name} ({d.phone})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-5">
+              <input
+                type="text"
+                required
+                value={simMessage}
+                onChange={(e) => setSimMessage(e.target.value)}
+                placeholder="Ex: STOP ou Je paie vendredi"
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
+              />
+            </div>
+            <div className="md:col-span-3">
+              <button
+                type="submit"
+                disabled={simRunning || debtors.length === 0}
+                className="w-full min-h-[44px] px-4 rounded-xl bg-slate-900 dark:bg-emerald-700 hover:bg-slate-800 dark:hover:bg-emerald-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Simuler réponse client</span>
+              </button>
+            </div>
+          </form>
+
+          <div className="flex flex-wrap gap-2">
+            {['STOP', 'ARRET', 'Je paie vendredi', 'Je règle demain'].map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => setSimMessage(preset)}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+              >
+                « {preset} »
+              </button>
+            ))}
+          </div>
+
+          {simResult && (
+            <p className="text-xs text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 p-3 rounded-xl">
+              {simResult}
+            </p>
+          )}
         </div>
-
-        <form onSubmit={handleSimulateInbound} className="grid grid-cols-1 md:grid-cols-12 gap-3">
-          <div className="md:col-span-4">
-            <select
-              value={selectedPhone}
-              onChange={(e) => setSimPhone(e.target.value)}
-              className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-num"
-            >
-              {debtors.map((d) => (
-                <option key={d.id} value={d.phone}>
-                  {d.name} ({d.phone})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="md:col-span-5">
-            <input
-              type="text"
-              required
-              value={simMessage}
-              onChange={(e) => setSimMessage(e.target.value)}
-              placeholder="Ex: STOP ou Je paie vendredi"
-              className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
-            />
-          </div>
-          <div className="md:col-span-3">
-            <button
-              type="submit"
-              disabled={simRunning || debtors.length === 0}
-              className="w-full min-h-[44px] px-4 rounded-xl bg-slate-900 dark:bg-emerald-700 hover:bg-slate-800 dark:hover:bg-emerald-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>Simuler réponse client</span>
-            </button>
-          </div>
-        </form>
-
-        <div className="flex flex-wrap gap-2">
-          {['STOP', 'ARRET', 'Je paie vendredi', 'Je règle demain'].map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              onClick={() => setSimMessage(preset)}
-              className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
-            >
-              « {preset} »
-            </button>
-          ))}
-        </div>
-
-        {simResult && (
-          <p className="text-xs text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 p-3 rounded-xl">
-            {simResult}
-          </p>
-        )}
-      </div>
+      )}
 
       {/* Filtres journaux */}
       <div className="inline-flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">

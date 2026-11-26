@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { CheckCircle2, MailCheck, Moon, RefreshCw, ShieldCheck, Store, Sun, GraduationCap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -574,6 +575,18 @@ export function AuthPage() {
           </div>
         </div>
       </main>
+
+      <footer className="px-6 py-4 max-w-6xl w-full mx-auto flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
+        <span>PayReminder · Suivi des créances FCFA</span>
+        <div className="flex items-center gap-4">
+          <Link to="/legal/cgu" className="hover:text-slate-700 dark:hover:text-slate-200 hover:underline">
+            CGU
+          </Link>
+          <Link to="/legal/confidentialite" className="hover:text-slate-700 dark:hover:text-slate-200 hover:underline">
+            Confidentialité
+          </Link>
+        </div>
+      </footer>
     </div>
   );
 }

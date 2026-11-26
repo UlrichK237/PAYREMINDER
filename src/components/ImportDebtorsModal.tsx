@@ -24,6 +24,7 @@ interface ParsedRow {
 export function ImportDebtorsModal({ open, onClose }: ImportDebtorsModalProps) {
   const { tenant, debtors, bulkImportDebtors } = useData();
   const [rows, setRows] = useState<ParsedRow[]>([]);
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [importing, setImporting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [doneCount, setDoneCount] = useState<number | null>(null);
@@ -107,6 +108,10 @@ export function ImportDebtorsModal({ open, onClose }: ImportDebtorsModalProps) {
 
   const handleConfirmImport = async () => {
     setServerError(null);
+    if (!consentConfirmed) {
+      setServerError('Confirmez avoir le droit de contacter ces personnes au sujet de leurs créances.');
+      return;
+    }
     setImporting(true);
     try {
       const count = await bulkImportDebtors(
@@ -115,7 +120,8 @@ export function ImportDebtorsModal({ open, onClose }: ImportDebtorsModalProps) {
           phone: r.phone,
           preferredChannel: r.preferredChannel,
           note: r.note,
-        }))
+        })),
+        consentConfirmed
       );
       setDoneCount(count);
     } catch (err) {
@@ -216,6 +222,18 @@ export function ImportDebtorsModal({ open, onClose }: ImportDebtorsModalProps) {
           </p>
         )}
 
+        {rows.length > 0 && (
+          <label className="flex items-start gap-2.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={consentConfirmed}
+              onChange={(e) => setConsentConfirmed(e.target.checked)}
+              className="mt-0.5 rounded border-slate-300"
+            />
+            <span>Je confirme avoir le droit de contacter ces personnes au sujet de leurs créances</span>
+          </label>
+        )}
+
         <div className="flex items-center justify-end gap-3 pt-2">
           <button
             type="button"
@@ -226,7 +244,7 @@ export function ImportDebtorsModal({ open, onClose }: ImportDebtorsModalProps) {
           </button>
           <button
             type="button"
-            disabled={validRows.length === 0 || importing || doneCount !== null}
+            disabled={validRows.length === 0 || !consentConfirmed || importing || doneCount !== null}
             onClick={() => void handleConfirmImport()}
             className="min-h-[44px] px-5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold disabled:opacity-50"
           >

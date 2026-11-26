@@ -1,24 +1,31 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Ban, CheckCircle2, Edit3, Plus, Search, Upload, X } from 'lucide-react';
+import { Ban, CheckCircle2, Edit3, Plus, Search, Trash2, Upload, X } from 'lucide-react';
 import { ImportDebtorsModal } from '../components/ImportDebtorsModal';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import type { Channel, Debtor } from '../types/payreminder';
 import { formatDateFr, formatFcfa } from '../utils/formatters';
 import { formatQuotaValue, PLANS } from '../utils/plans';
 
 export function DebtorsPage() {
-  const { tenant, debtors, debts, createDebtor, updateDebtor } = useData();
+  const { profile, demoMode } = useAuth();
+  const { tenant, debtors, debts, createDebtor, updateDebtor, eraseDebtorData } = useData();
+  const isOwner = demoMode || profile?.role === 'owner';
   const [search, setSearch] = useState('');
   const [channelFilter, setChannelFilter] = useState<'all' | 'whatsapp' | 'sms' | 'optout'>('all');
   const [importOpen, setImportOpen] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Debtor | null>(null);
+  const [erasingTarget, setErasingTarget] = useState<Debtor | null>(null);
+  const [erasing, setErasing] = useState(false);
+  const [eraseError, setEraseError] = useState<string | null>(null);
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('+2376');
   const [preferredChannel, setPreferredChannel] = useState<Channel>('whatsapp');
   const [note, setNote] = useState('');
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -52,6 +59,7 @@ export function DebtorsPage() {
     setPhone('+2376');
     setPreferredChannel(tenant && PLANS[tenant.plan].whatsappEnabled ? 'whatsapp' : 'sms');
     setNote('');
+    setConsentConfirmed(false);
     setFormError(null);
     setFormOpen(true);
   };
@@ -69,18 +77,36 @@ export function DebtorsPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    if (!editing && !consentConfirmed) {
+      setFormError('Confirmez avoir le droit de contacter cette personne au sujet de cette créance.');
+      return;
+    }
     setSaving(true);
     try {
       if (editing) {
         await updateDebtor(editing.id, { name, phone, preferredChannel, note });
       } else {
-        await createDebtor({ name, phone, preferredChannel, note });
+        await createDebtor({ name, phone, preferredChannel, note, consentConfirmed });
       }
       setFormOpen(false);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Erreur de sauvegarde.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleConfirmErase = async () => {
+    if (!erasingTarget) return;
+    setEraseError(null);
+    setErasing(true);
+    try {
+      await eraseDebtorData(erasingTarget.id);
+      setErasingTarget(null);
+    } catch (err) {
+      setEraseError(err instanceof Error ? err.message : 'Erreur lors de l’effacement.');
+    } finally {
+      setErasing(false);
     }
   };
 
@@ -257,6 +283,20 @@ export function DebtorsPage() {
                           >
                             <Edit3 className="w-3.5 h-3.5" />
                           </button>
+                          {isOwner && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEraseError(null);
+                                setErasingTarget(d);
+                              }}
+                              aria-label={`Effacer les données de ${d.name}`}
+                              title="Effacer les données (RGPD)"
+                              className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -338,6 +378,18 @@ export function DebtorsPage() {
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
                 />
               </div>
+              {!editing && (
+                <label className="flex items-start gap-2.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    required
+                    checked={consentConfirmed}
+                    onChange={(e) => setConsentConfirmed(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-300"
+                  />
+                  <span>Je confirme avoir le droit de contacter cette personne au sujet de cette créance</span>
+                </label>
+              )}
               {formError && <p className="text-xs text-red-600 dark:text-red-400">{formError}</p>}
               <button
                 type="submit"
@@ -347,6 +399,55 @@ export function DebtorsPage() {
                 {saving ? 'Enregistrement...' : 'Enregistrer'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal confirmation effacement RGPD (Owner-only) */}
+      {erasingTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
+                Effacer les données du débiteur
+              </h2>
+              <button
+                type="button"
+                onClick={() => setErasingTarget(null)}
+                aria-label="Fermer"
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-slate-500"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              Vous allez supprimer définitivement <strong>{erasingTarget.name}</strong> ({erasingTarget.phone}) ainsi que
+              toutes ses dettes, paiements, relances et journaux de messages associés. Cette action est irréversible et
+              sera tracée dans le journal d’activité.
+            </p>
+            {eraseError && (
+              <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 p-3 rounded-xl">
+                {eraseError}
+              </p>
+            )}
+            <div className="flex items-center justify-end gap-3 pt-1">
+              <button
+                type="button"
+                disabled={erasing}
+                onClick={() => setErasingTarget(null)}
+                className="min-h-[44px] px-4 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={erasing}
+                onClick={() => void handleConfirmErase()}
+                className="min-h-[44px] px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-60"
+              >
+                {erasing ? 'Effacement...' : 'Effacer définitivement'}
+              </button>
+            </div>
           </div>
         </div>
       )}

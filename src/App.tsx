@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Layout } from './components/Layout';
@@ -6,14 +6,24 @@ import { QuickDebtModal } from './components/QuickDebtModal';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { DataProvider, useData } from './context/DataContext';
 import { ThemeProvider } from './context/ThemeContext';
-import { AuthPage } from './pages/AuthPage';
-import { BillingPage } from './pages/BillingPage';
-import { DashboardPage } from './pages/DashboardPage';
-import { DebtorsPage } from './pages/DebtorsPage';
-import { DebtsPage } from './pages/DebtsPage';
-import { RemindersPage } from './pages/RemindersPage';
-import { ReportsPage } from './pages/ReportsPage';
-import { SettingsPage } from './pages/SettingsPage';
+
+const AuthPage = lazy(() => import('./pages/AuthPage').then((m) => ({ default: m.AuthPage })));
+const BillingPage = lazy(() => import('./pages/BillingPage').then((m) => ({ default: m.BillingPage })));
+const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })));
+const DebtorsPage = lazy(() => import('./pages/DebtorsPage').then((m) => ({ default: m.DebtorsPage })));
+const DebtsPage = lazy(() => import('./pages/DebtsPage').then((m) => ({ default: m.DebtsPage })));
+const LegalPage = lazy(() => import('./pages/LegalPage').then((m) => ({ default: m.LegalPage })));
+const RemindersPage = lazy(() => import('./pages/RemindersPage').then((m) => ({ default: m.RemindersPage })));
+const ReportsPage = lazy(() => import('./pages/ReportsPage').then((m) => ({ default: m.ReportsPage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+
+function PageLoader() {
+  return (
+    <div className="min-h-[240px] flex items-center justify-center">
+      <div className="text-sm text-slate-500 dark:text-slate-400">Chargement...</div>
+    </div>
+  );
+}
 
 function AppRoutes() {
   const { user, profile, authReady, demoMode, needsVerification, needsCompanySetup } = useAuth();
@@ -31,7 +41,15 @@ function AppRoutes() {
   const isWorkspaceReady = demoMode || (Boolean(user) && !needsVerification && !needsCompanySetup && Boolean(profile));
 
   if (!isWorkspaceReady) {
-    return <AuthPage />;
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          <Route path="/legal/cgu" element={<LegalPage docType="cgu" />} />
+          <Route path="/legal/confidentialite" element={<LegalPage docType="confidentialite" />} />
+          <Route path="*" element={<AuthPage />} />
+        </Routes>
+      </Suspense>
+    );
   }
 
   if (loadingData) {
@@ -51,18 +69,29 @@ function AppRoutes() {
 
   return (
     <>
-      <Layout onQuickNewDebt={() => setQuickDebtOpen(true)}>
+      <Suspense fallback={<PageLoader />}>
         <Routes>
-          <Route path="/" element={<DashboardPage onOpenNewDebt={() => setQuickDebtOpen(true)} />} />
-          <Route path="/dettes" element={<DebtsPage onOpenNewDebt={() => setQuickDebtOpen(true)} />} />
-          <Route path="/debiteurs" element={<DebtorsPage />} />
-          <Route path="/relances" element={<RemindersPage />} />
-          <Route path="/rapports" element={<ReportsPage />} />
-          <Route path="/abonnement" element={<BillingPage />} />
-          <Route path="/parametres" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="/legal/cgu" element={<LegalPage docType="cgu" />} />
+          <Route path="/legal/confidentialite" element={<LegalPage docType="confidentialite" />} />
+          <Route
+            path="*"
+            element={
+              <Layout onQuickNewDebt={() => setQuickDebtOpen(true)}>
+                <Routes>
+                  <Route path="/" element={<DashboardPage onOpenNewDebt={() => setQuickDebtOpen(true)} />} />
+                  <Route path="/dettes" element={<DebtsPage onOpenNewDebt={() => setQuickDebtOpen(true)} />} />
+                  <Route path="/debiteurs" element={<DebtorsPage />} />
+                  <Route path="/relances" element={<RemindersPage />} />
+                  <Route path="/rapports" element={<ReportsPage />} />
+                  <Route path="/abonnement" element={<BillingPage />} />
+                  <Route path="/parametres" element={<SettingsPage />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </Layout>
+            }
+          />
         </Routes>
-      </Layout>
+      </Suspense>
       <QuickDebtModal open={quickDebtOpen} onClose={() => setQuickDebtOpen(false)} />
     </>
   );

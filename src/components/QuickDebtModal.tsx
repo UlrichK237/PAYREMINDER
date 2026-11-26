@@ -14,6 +14,7 @@ export function QuickDebtModal({ open, onClose }: QuickDebtModalProps) {
   const [creatingClient, setCreatingClient] = useState(false);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('+2376');
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [amount, setAmount] = useState('');
   const [dueDate, setDueDate] = useState(() => {
     const d = new Date(`${getTodayDoualaDate()}T12:00:00Z`);
@@ -37,15 +38,22 @@ export function QuickDebtModal({ open, onClose }: QuickDebtModalProps) {
       return;
     }
 
+    const needsNewClient = creatingClient || debtors.length === 0;
+    if (needsNewClient && !consentConfirmed) {
+      setError('Veuillez confirmer avoir le droit de contacter cette personne au sujet de cette créance.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       let targetDebtorId = effectiveDebtorId;
-      if (creatingClient || debtors.length === 0) {
+      if (needsNewClient) {
         targetDebtorId = await createDebtor({
           name: newName,
           phone: newPhone,
           preferredChannel: 'whatsapp',
           note: '',
+          consentConfirmed,
         });
       }
       await createDebt({
@@ -58,6 +66,7 @@ export function QuickDebtModal({ open, onClose }: QuickDebtModalProps) {
       setDescription('');
       setNewName('');
       setNewPhone('+2376');
+      setConsentConfirmed(false);
       setCreatingClient(false);
       onClose();
     } catch (err) {
@@ -144,6 +153,16 @@ export function QuickDebtModal({ open, onClose }: QuickDebtModalProps) {
                 placeholder="+237677123456"
                 className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm font-num"
               />
+              <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  required
+                  checked={consentConfirmed}
+                  onChange={(e) => setConsentConfirmed(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300"
+                />
+                <span>Je confirme avoir le droit de contacter cette personne au sujet de cette créance</span>
+              </label>
             </div>
           )}
 
