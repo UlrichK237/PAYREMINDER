@@ -6,6 +6,7 @@ import {
   isWithinQuietHours,
   verifyWebhookHmac,
 } from '../../server/app';
+import { hmacPhoneCode, hmacPhoneNumber, resolveOtpPepper } from '../../server/config';
 import { maskPhoneNumber, sanitizeLogValue, sanitizeStringForLogs } from '../../server/logger';
 import { appendSmsStopNotice, SMS_MAX_LENGTH, SMS_STOP_NOTICE } from '../../server/services/reminderService';
 import {
@@ -187,10 +188,52 @@ describe('Mention STOP SMS & masquage PII dans les logs', () => {
         nested: { apiKey: 'key-123', ok: true },
       })
     ).toEqual({
-      phone: '***333'.replace('333', '233'),
+      phone: '***233',
       customerPhone: '***566',
       cronSecret: '[REDACTED]',
       nested: { apiKey: '[REDACTED]', ok: true },
     });
   });
 });
+
+describe('D1 — Helpers HMAC OTP & liste d’opposition', () => {
+  it('exige OTP_PEPPER en production et calcule des empreintes HMAC déterministes', () => {
+    expect(() =>
+      resolveOtpPepper(
+        {
+          whatsappAccessToken: '',
+          whatsappPhoneNumberId: '',
+          whatsappWebhookVerifyToken: '',
+          whatsappAppSecret: '',
+          smsProviderUrl: '',
+          smsApiKey: '',
+          smsSenderId: 'PayReminder',
+          paymentProviderUrl: '',
+          paymentApiKey: '',
+          paymentWebhookSecret: '',
+          emailProviderApiKey: '',
+          emailFromAddress: '',
+          cronSecret: '',
+          otpPepper: '',
+          allowedPhonePrefixes: '+237',
+          allowPlanChangeWithoutPayment: false,
+          appBaseUrl: 'http://localhost:3000',
+        },
+        true
+      )
+    ).toThrow(/OTP_PEPPER/);
+
+    const h1 = hmacPhoneNumber('pepper-1', '+237677123456');
+    const h2 = hmacPhoneNumber('pepper-1', '+237677123456');
+    const h3 = hmacPhoneNumber('pepper-2', '+237677123456');
+    expect(h1).toBe(h2);
+    expect(h1).not.toBe(h3);
+    expect(h1).toHaveLength(64);
+
+    const c1 = hmacPhoneCode('pepper-1', 'salt-abc', '654321');
+    const c2 = hmacPhoneCode('pepper-1', 'salt-abc', '654322');
+    expect(c1).toHaveLength(64);
+    expect(c1).not.toBe(c2);
+  });
+});
+

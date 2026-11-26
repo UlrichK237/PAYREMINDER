@@ -31,6 +31,7 @@ export interface Tenant {
   timezone: string;        // 'Africa/Douala'
   autoEscalate: boolean;
   fallbackToSms: boolean;
+  activeDebtsCount?: number;
   ownerId: string;
   createdAt: string;
   updatedAt: string;
@@ -136,6 +137,8 @@ export interface Debt {
   reminderCount: number;
   lastReminderAt?: string;
   paymentLink?: string;
+  appliedRuleOffsets?: number[];
+  ruleReminderCounts?: Record<string, number>;
   createdAt: string;
   updatedAt: string;
 }

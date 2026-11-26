@@ -136,6 +136,7 @@ function getField(obj: Record<string, unknown>, field: string): unknown {
 export class InMemoryFirestore implements FirestoreLike {
   private readonly docs = new Map<string, Record<string, unknown>>();
   private readonly nowFn: () => number;
+  private txQueue: Promise<unknown> = Promise.resolve();
 
   public readonly fieldValue: FieldValueLike = {
     serverTimestamp: () => ({ __sentinel: 'serverTimestamp' }) satisfies Sentinel,
@@ -252,45 +253,51 @@ export class InMemoryFirestore implements FirestoreLike {
     });
   }
 
-  public async runTransaction<T>(fn: (tx: TransactionLike) => Promise<T>): Promise<T> {
-    const shadow = new Map<string, Record<string, unknown>>();
-    for (const [k, v] of this.docs.entries()) {
-      shadow.set(k, clonePlain(v));
-    }
-    const self = this;
-    const ops: Array<() => void> = [];
+  public runTransaction<T>(fn: (tx: TransactionLike) => Promise<T>): Promise<T> {
+    const execute = async (): Promise<T> => {
+      const shadow = new Map<string, Record<string, unknown>>();
+      for (const [k, v] of this.docs.entries()) {
+        shadow.set(k, clonePlain(v));
+      }
+      const self = this;
+      const ops: Array<() => void> = [];
 
-    const tx: TransactionLike = {
-      async get(ref: DocRefLike): Promise<DocSnapshotLike> {
-        const data = shadow.get(ref.path);
-        return {
-          id: ref.id,
-          exists: data !== undefined,
-          ref,
-          data: () => (data ? clonePlain(data) : undefined),
-        };
-      },
-      set(ref, data, options) {
-        ops.push(() => applySet(self.docs, ref.path, data, Boolean(options?.merge), self.nowFn()));
-        return tx;
-      },
-      update(ref, data) {
-        ops.push(() => applyUpdate(self.docs, ref.path, data, self.nowFn()));
-        return tx;
-      },
-      delete(ref) {
-        ops.push(() => {
-          self.docs.delete(ref.path);
-        });
-        return tx;
-      },
+      const tx: TransactionLike = {
+        async get(ref: DocRefLike): Promise<DocSnapshotLike> {
+          const data = shadow.get(ref.path);
+          return {
+            id: ref.id,
+            exists: data !== undefined,
+            ref,
+            data: () => (data ? clonePlain(data) : undefined),
+          };
+        },
+        set(ref, data, options) {
+          ops.push(() => applySet(self.docs, ref.path, data, Boolean(options?.merge), self.nowFn()));
+          return tx;
+        },
+        update(ref, data) {
+          ops.push(() => applyUpdate(self.docs, ref.path, data, self.nowFn()));
+          return tx;
+        },
+        delete(ref) {
+          ops.push(() => {
+            self.docs.delete(ref.path);
+          });
+          return tx;
+        },
+      };
+
+      const result = await fn(tx);
+      for (const op of ops) {
+        op();
+      }
+      return result;
     };
 
-    const result = await fn(tx);
-    for (const op of ops) {
-      op();
-    }
-    return result;
+    const next = this.txQueue.then(execute, execute);
+    this.txQueue = next.catch(() => {});
+    return next;
   }
 
   public batch(): WriteBatchLike {

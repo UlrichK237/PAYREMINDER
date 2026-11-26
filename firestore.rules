@@ -97,7 +97,7 @@ service cloud.firestore {
           'maxRemindersPerMonth', 'maxRemindersPerDay', 'remindersUsedThisMonth', 'quotaResetMonth',
           'subscriptionDate', 'planExpiresAt', 'planStatus', 'lastPaymentAt',
           'quietHoursStart', 'quietHoursEnd', 'timezone',
-          'autoEscalate', 'fallbackToSms', 'ownerId', 'createdAt', 'updatedAt'
+          'autoEscalate', 'fallbackToSms', 'activeDebtsCount', 'ownerId', 'createdAt', 'updatedAt'
         ]) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         data.sector is string && data.sector.size() >= 1 && data.sector.size() <= 80 &&
@@ -118,6 +118,7 @@ service cloud.firestore {
         data.timezone is string && data.timezone.size() >= 3 && data.timezone.size() <= 40 &&
         data.autoEscalate is bool &&
         data.fallbackToSms is bool &&
+        (!('activeDebtsCount' in data) || (data.activeDebtsCount is int && data.activeDebtsCount >= 0)) &&
         isValidId(data.ownerId) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -167,7 +168,8 @@ service cloud.firestore {
         data.keys().hasOnly([
           'tenantId', 'debtorId', 'debtorName', 'debtorPhone', 'initialAmount',
           'remainingAmount', 'issuedAt', 'dueDate', 'status', 'description',
-          'reminderCount', 'lastReminderAt', 'paymentLink', 'createdAt', 'updatedAt'
+          'reminderCount', 'lastReminderAt', 'paymentLink',
+          'appliedRuleOffsets', 'ruleReminderCounts', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.tenantId) && data.tenantId == tenantId &&
         isValidId(data.debtorId) &&
@@ -187,6 +189,8 @@ service cloud.firestore {
         data.reminderCount is int && data.reminderCount >= 0 && data.reminderCount <= 50 &&
         (!('lastReminderAt' in data) || (data.lastReminderAt is string && data.lastReminderAt.size() <= 40)) &&
         (!('paymentLink' in data) || (data.paymentLink is string && data.paymentLink.size() <= 300)) &&
+        (!('appliedRuleOffsets' in data) || (data.appliedRuleOffsets is list && data.appliedRuleOffsets.size() <= 50 && (data.appliedRuleOffsets.size() == 0 || data.appliedRuleOffsets[0] is int))) &&
+        (!('ruleReminderCounts' in data) || data.ruleReminderCounts is map) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -302,6 +306,7 @@ service cloud.firestore {
         incoming().maxDebtors == 5 &&
         incoming().maxRemindersPerMonth == 30 &&
         incoming().remindersUsedThisMonth == 0 &&
+        (!('activeDebtsCount' in incoming()) || incoming().activeDebtsCount == 0) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         getAfter(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid)).data.role == 'owner';
@@ -361,6 +366,7 @@ service cloud.firestore {
           incoming().tenantId == existing().tenantId &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
+          (existing().optOut == false || incoming().optOut == true) &&
           isTenantMember(tenantId) &&
           incoming().diff(existing()).affectedKeys().hasOnly([
             'name', 'phone', 'preferredChannel', 'note', 'optOut', 'reliabilityScore', 'promiseDate', 'updatedAt'
@@ -373,6 +379,8 @@ service cloud.firestore {
         allow list: if isValidId(tenantId) && isTenantMember(tenantId);
         allow create: if isValidId(tenantId) && isValidId(debtId) &&
           isValidDebt(incoming(), tenantId) &&
+          !('appliedRuleOffsets' in incoming()) &&
+          !('ruleReminderCounts' in incoming()) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
           isTenantMember(tenantId) &&
@@ -473,6 +481,18 @@ service cloud.firestore {
         allow list: if isValidId(tenantId) && isTenantOwner(tenantId);
         allow create, update, delete: if false;
       }
+
+      // Liste d'opposition irréversible côté client (STOP / opt-out, serveur uniquement)
+      match /suppressions/{phoneHash} {
+        allow read, write: if false;
+      }
+
+      // État glissant des envois par débiteur sur 7 jours (lecture membres, écriture serveur uniquement)
+      match /debtorSendState/{debtorId} {
+        allow get: if isValidId(tenantId) && isValidId(debtorId) && isTenantMember(tenantId);
+        allow list: if isValidId(tenantId) && isTenantMember(tenantId);
+        allow create, update, delete: if false;
+      }
     }
 
     // Documents serveur de sécurité par entreprise (quotas journaliers & vérification téléphone)
@@ -481,6 +501,11 @@ service cloud.firestore {
         get(/databases/$(database)/documents/tenants/$(tenantId)/users/$(request.auth.uid)).data.status == 'active';
       allow list: if false;
       allow create, update, delete: if false;
+    }
+
+    // Secrets OTP, sel/hash et compteurs SMS-pumping (serveur uniquement, lecture/écriture client interdites)
+    match /tenantSecurityPrivate/{tenantId} {
+      allow read, write: if false;
     }
 
     // Verrous anti-double exécution des tâches planifiées (serveur uniquement)

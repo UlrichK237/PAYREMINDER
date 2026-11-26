@@ -46,7 +46,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [messageLogs, setMessageLogs] = useState<MessageLog[]>([]);
   const [billingHistory, setBillingHistory] = useState<BillingRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
-  const [phoneVerified, setPhoneVerified] = useState(false);
+  const [rawPhoneVerified, setRawPhoneVerified] = useState(false);
+  const [phoneVerifiedNumber, setPhoneVerifiedNumber] = useState<string | null>(null);
   const [dailyUsage, setDailyUsage] = useState<{ date: string; count: number }>({
     date: getTodayDoualaDate(),
     count: 0,
@@ -168,7 +169,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         createdAt: nowIso,
       },
     ]);
-    setPhoneVerified(false);
+    setRawPhoneVerified(false);
+    setPhoneVerifiedNumber(null);
     setDailyUsage({ date: getTodayDoualaDate(), count: 0 });
     setLoadingData(false);
   }, []);
@@ -190,7 +192,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setMessageLogs([]);
       setBillingHistory([]);
       setAuditLogs([]);
-      setPhoneVerified(false);
+      setRawPhoneVerified(false);
+      setPhoneVerifiedNumber(null);
       setDailyUsage({ date: getTodayDoualaDate(), count: 0 });
       return;
     }
@@ -207,16 +210,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           if (snap.exists()) {
             const sec = snap.data() as {
               phoneVerified?: boolean;
+              phoneVerifiedNumber?: string;
               dailyUsage?: { date?: string; count?: number };
             };
             const today = getTodayDoualaDate();
-            setPhoneVerified(Boolean(sec.phoneVerified));
+            setRawPhoneVerified(Boolean(sec.phoneVerified));
+            setPhoneVerifiedNumber(sec.phoneVerifiedNumber || null);
             setDailyUsage({
               date: today,
               count: sec.dailyUsage?.date === today ? Number(sec.dailyUsage.count || 0) : 0,
             });
           } else {
-            setPhoneVerified(false);
+            setRawPhoneVerified(false);
+            setPhoneVerifiedNumber(null);
             setDailyUsage({ date: getTodayDoualaDate(), count: 0 });
           }
         },
@@ -624,6 +630,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     setMessageLogs,
   });
 
+  const phoneVerified = useMemo(() => {
+    if (demoMode) return rawPhoneVerified;
+    if (!rawPhoneVerified) return false;
+    if (phoneVerifiedNumber && tenant && phoneVerifiedNumber !== tenant.phone) return false;
+    return true;
+  }, [demoMode, rawPhoneVerified, phoneVerifiedNumber, tenant]);
+
   const settingsAndBillingActions = useSettingsAndBillingActions({
     tenant,
     messageTemplates,
@@ -635,7 +648,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     setReminderRules,
     setTeamInvites,
     setBillingHistory,
-    setPhoneVerified,
+    setPhoneVerified: setRawPhoneVerified,
+    setPhoneVerifiedNumber,
   });
 
   return (

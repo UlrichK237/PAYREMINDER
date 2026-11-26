@@ -44,6 +44,7 @@ Toutes les clés secrètes restent exclusivement côté serveur (aucun préfixe 
 | --- | --- |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Compte de service Firebase Admin JSON (sinon `applicationDefault()`) |
 | `CRON_SECRET` | Secret obligatoire (`x-cron-secret`) pour les routes `/api/cron/*` et `/api/reports/send-monthly` |
+| `OTP_PEPPER`, `ALLOWED_PHONE_PREFIXES` | Secret HMAC-SHA256 (OTP & liste d'opposition `suppressions`, obligatoire en prod) et préfixes SMS autorisés (défaut `+237`) |
 | `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | Envoi WhatsApp Cloud API + signature HMAC webhooks Meta |
 | `SMS_PROVIDER_URL`, `SMS_API_KEY`, `SMS_SENDER_ID` | Agrégateur SMS Cameroun (repli automatique ou canal principal) |
 | `PAYMENT_PROVIDER_URL`, `PAYMENT_API_KEY`, `PAYMENT_WEBHOOK_SECRET` | Génération de liens Mobile Money + signature HMAC webhooks paiement |
@@ -87,7 +88,20 @@ npm run test:all
 
 ---
 
+## Intégration continue
+
+Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) exécute automatiquement à chaque `push` (branches `main`/`master`) et `pull_request` :
+
+1. Installation des dépendances (`npm install --no-audit --no-fund`) avec **Node.js 22** et **Java 21 (Temurin)**.
+2. Vérification statique TypeScript et règles Firestore (`npm run lint`).
+3. Compilation du bundle de production (`npm run build`).
+4. Exécution des tests unitaires et d'intégration API Express (`npm test`).
+5. Exécution des tests des règles de sécurité Firestore sur l'émulateur local (`npm run test:rules`).
+
+---
+
 ## Documentation complémentaire
 
 - [Guide de déploiement & tâches planifiées](docs/DEPLOIEMENT.md)
 - [Architecture de sécurité, routes & matrice Firestore](docs/SECURITE.md)
+

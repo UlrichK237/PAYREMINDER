@@ -27,6 +27,7 @@ interface UseSettingsAndBillingActionsDeps {
   setTeamInvites: React.Dispatch<React.SetStateAction<TenantInvite[]>>;
   setBillingHistory: React.Dispatch<React.SetStateAction<BillingRecord[]>>;
   setPhoneVerified: React.Dispatch<React.SetStateAction<boolean>>;
+  setPhoneVerifiedNumber?: React.Dispatch<React.SetStateAction<string | null>>;
 }
 
 export function useSettingsAndBillingActions(deps: UseSettingsAndBillingActionsDeps) {
@@ -42,6 +43,7 @@ export function useSettingsAndBillingActions(deps: UseSettingsAndBillingActionsD
     setTeamInvites,
     setBillingHistory,
     setPhoneVerified,
+    setPhoneVerifiedNumber,
   } = deps;
 
   const updateTenantSettings: DataContextValue['updateTenantSettings'] = async (patch) => {
@@ -368,6 +370,7 @@ export function useSettingsAndBillingActions(deps: UseSettingsAndBillingActionsD
         throw new Error('Code démo invalide (utilisez 123456).');
       }
       setPhoneVerified(true);
+      setPhoneVerifiedNumber?.(tenant.phone);
       return;
     }
     const headers = await getAuthHeaders();
@@ -376,11 +379,17 @@ export function useSettingsAndBillingActions(deps: UseSettingsAndBillingActionsD
       headers,
       body: JSON.stringify({ tenantId: tenant.id, code: code.trim() }),
     });
-    const data = (await resp.json()) as { ok?: boolean; phoneVerified?: boolean; error?: string };
+    const data = (await resp.json()) as {
+      ok?: boolean;
+      phoneVerified?: boolean;
+      phoneVerifiedNumber?: string;
+      error?: string;
+    };
     if (!resp.ok || !data.phoneVerified) {
       throw new Error(data.error || 'Code de vérification invalide.');
     }
     setPhoneVerified(true);
+    setPhoneVerifiedNumber?.(data.phoneVerifiedNumber || tenant.phone);
   };
 
   return {

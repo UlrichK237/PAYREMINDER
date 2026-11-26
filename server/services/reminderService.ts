@@ -1,6 +1,12 @@
 import crypto from 'node:crypto';
 import { adminDb, FieldValue } from '../firebaseAdmin';
-import { getServerSecrets, HttpError } from '../config';
+import {
+  getServerSecrets,
+  hmacPhoneNumber,
+  HttpError,
+  isProduction as defaultIsProduction,
+  resolveOtpPepper,
+} from '../config';
 import { logger as defaultLogger, type LoggerLike } from '../logger';
 import type { AppProviders, DocRefLike, FieldValueLike, FirestoreLike, ServerSecrets } from '../types';
 import type { Channel, PlanId, Tone } from '../../src/types/payreminder';
@@ -30,6 +36,7 @@ export interface SendReminderParams {
   tone?: Tone;
   trigger: 'manual' | 'cron';
   actorUid?: string;
+  ruleOffsetDays?: number;
 }
 
 export interface SendReminderResult {
@@ -52,6 +59,7 @@ export interface ReminderServiceDeps {
   fieldValue?: FieldValueLike;
   now?: () => number;
   getSecrets?: () => ServerSecrets;
+  isProduction?: boolean;
   providers?: AppProviders;
   logger?: LoggerLike;
 }
@@ -95,20 +103,27 @@ export function appendSmsStopNotice(message: string, maxLength = SMS_MAX_LENGTH)
   return `${truncated}...${suffix}`.slice(0, maxLength);
 }
 
-async function refundReminderQuotas(params: {
+async function rollbackReminderReservation(params: {
   db: FirestoreLike;
   fieldValue: FieldValueLike;
   tenantRef: DocRefLike;
   securityRef: DocRefLike;
+  debtRef: DocRefLike;
+  sendStateRef: DocRefLike;
   currentMonth: string;
   todayDouala: string;
+  reservedNowMs: number;
+  reservedNowIso: string;
+  previousLastReminderAt?: string;
   logger: LoggerLike;
 }): Promise<void> {
   try {
     await params.db.runTransaction(async (tx) => {
-      const [tSnap, sSnap] = await Promise.all([
+      const [tSnap, sSnap, dSnap, ssSnap] = await Promise.all([
         tx.get(params.tenantRef),
         tx.get(params.securityRef),
+        tx.get(params.debtRef),
+        tx.get(params.sendStateRef),
       ]);
 
       if (tSnap.exists) {
@@ -136,9 +151,38 @@ async function refundReminderQuotas(params: {
           );
         }
       }
+
+      if (dSnap.exists) {
+        const dData = dSnap.data() as { lastReminderAt?: string };
+        if (dData.lastReminderAt === params.reservedNowIso) {
+          tx.update(params.debtRef, {
+            lastReminderAt: params.previousLastReminderAt ?? params.fieldValue.delete(),
+            updatedAt: params.fieldValue.serverTimestamp(),
+          });
+        }
+      }
+
+      if (ssSnap.exists) {
+        const ssData = ssSnap.data() as { sentTimestamps?: unknown[] };
+        if (Array.isArray(ssData.sentTimestamps)) {
+          const idx = ssData.sentTimestamps.findIndex((ts) => Number(ts) === params.reservedNowMs);
+          if (idx !== -1) {
+            const nextTimestamps = [...ssData.sentTimestamps];
+            nextTimestamps.splice(idx, 1);
+            tx.set(
+              params.sendStateRef,
+              {
+                sentTimestamps: nextTimestamps,
+                updatedAt: params.fieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+        }
+      }
     });
   } catch (refundError) {
-    params.logger.error({ err: refundError }, 'QUOTA REFUND FAILED');
+    params.logger.error({ err: refundError }, 'QUOTA ROLLBACK FAILED');
   }
 }
 
@@ -155,7 +199,9 @@ export async function sendReminderForDebt(
   const nowFn = deps.now ?? (() => Date.now());
   const nowMs = nowFn();
   const nowDate = new Date(nowMs);
+  const reservedNowIso = nowDate.toISOString();
   const secrets = (deps.getSecrets ?? getServerSecrets)();
+  const isProd = deps.isProduction ?? defaultIsProduction;
   const log = deps.logger ?? defaultLogger;
 
   if (typeof tenantId !== 'string' || !VALID_ID_REGEX.test(tenantId)) {
@@ -171,6 +217,8 @@ export async function sendReminderForDebt(
     throw new HttpError(400, 'Ton de relance invalide.', 'invalid_tone');
   }
 
+  const pepper = resolveOtpPepper(secrets, isProd);
+
   const tenantRef = db.doc(`tenants/${tenantId}`);
   const securityRef = db.doc(`tenantSecurity/${tenantId}`);
   const debtRef = db.doc(`tenants/${tenantId}/debts/${debtId}`);
@@ -185,6 +233,7 @@ export async function sendReminderForDebt(
 
   const tenantData = tenantSnap.data() as {
     name: string;
+    phone?: string;
     plan?: string;
     autoEscalate?: boolean;
     fallbackToSms?: boolean;
@@ -196,6 +245,8 @@ export async function sendReminderForDebt(
     status: string;
     description?: string;
     lastReminderAt?: string;
+    appliedRuleOffsets?: number[];
+    ruleReminderCounts?: Record<string, number>;
   };
 
   if (debtData.status === 'payee' || debtData.status === 'annulee' || Number(debtData.remainingAmount) <= 0) {
@@ -204,18 +255,6 @@ export async function sendReminderForDebt(
       'Relance impossible : cette dette est déjà payée ou annulée.',
       'debt_settled_or_cancelled'
     );
-  }
-
-  // Délai minimum de 24h entre deux relances sur la même dette
-  if (debtData.lastReminderAt) {
-    const lastSentMs = Date.parse(debtData.lastReminderAt);
-    if (Number.isFinite(lastSentMs) && nowMs - lastSentMs < 24 * 60 * 60 * 1000) {
-      throw new HttpError(
-        409,
-        'Une relance a déjà été envoyée il y a moins de 24 heures pour cette dette.',
-        'cooldown_24h'
-      );
-    }
   }
 
   const debtorSnap = await db.doc(`tenants/${tenantId}/debtors/${debtData.debtorId}`).get();
@@ -242,29 +281,9 @@ export async function sendReminderForDebt(
     throw new HttpError(409, 'Numéro de téléphone du débiteur invalide.', 'invalid_phone');
   }
 
-  // Maximum 3 relances sur 7 jours glissants pour un même débiteur (toutes dettes confondues)
-  const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
-  const debtorRemindersSnap = await db
-    .collection(`tenants/${tenantId}/reminders`)
-    .where('debtorId', '==', debtData.debtorId)
-    .get();
-
-  let recentDebtorReminders = 0;
-  for (const remDoc of debtorRemindersSnap.docs) {
-    const rem = remDoc.data() as { scheduledAt?: string; status?: string };
-    if (rem.status === 'echouee' || rem.status === 'annulee') continue;
-    const sentMs = rem.scheduledAt ? Date.parse(rem.scheduledAt) : NaN;
-    if (Number.isFinite(sentMs) && sentMs >= sevenDaysAgoMs) {
-      recentDebtorReminders += 1;
-    }
-  }
-  if (recentDebtorReminders >= 3) {
-    throw new HttpError(
-      409,
-      'Limite anti-harcèlement atteinte : maximum 3 relances sur 7 jours glissants pour ce débiteur.',
-      'debtor_weekly_cap'
-    );
-  }
+  const phoneHash = hmacPhoneNumber(pepper, debtorData.phone);
+  const suppressionRef = db.doc(`tenants/${tenantId}/suppressions/${phoneHash}`);
+  const sendStateRef = db.doc(`tenants/${tenantId}/debtorSendState/${debtData.debtorId}`);
 
   const tenantPlan: PlanId = isValidPlanId(tenantData.plan) ? tenantData.plan : 'free';
   const whatsappAllowed = PLANS[tenantPlan].whatsappEnabled;
@@ -296,18 +315,43 @@ export async function sendReminderForDebt(
     Boolean(secrets.whatsappAccessToken && secrets.whatsappPhoneNumberId) ||
     Boolean(secrets.smsProviderUrl && secrets.smsApiKey);
 
-  // Réservation transactionnelle du quota mensuel + plafond journalier + phoneVerified
-  await db.runTransaction(async (tx) => {
-    const [freshTenantSnap, freshSecuritySnap] = await Promise.all([
+  // Réservation atomique et transactionnelle :
+  // - suppression irréversible (STOP)
+  // - téléphone propriétaire vérifié + numéro concordant si fournisseur réel configuré
+  // - délai minimum 24h sur la dette
+  // - plafond hebdomadaire 3 relances / 7 jours glissants (debtorSendState)
+  // - quota mensuel + plafond journalier
+  const reservation = await db.runTransaction(async (tx) => {
+    const [
+      freshTenantSnap,
+      freshSecuritySnap,
+      freshDebtSnap,
+      freshSendStateSnap,
+      freshSuppressionSnap,
+    ] = await Promise.all([
       tx.get(tenantRef),
       tx.get(securityRef),
+      tx.get(debtRef),
+      tx.get(sendStateRef),
+      tx.get(suppressionRef),
     ]);
 
     if (!freshTenantSnap.exists) {
       throw new HttpError(404, 'Entreprise introuvable.', 'tenant_not_found');
     }
+    if (!freshDebtSnap.exists) {
+      throw new HttpError(404, 'Dette introuvable pour cette entreprise.', 'debt_not_found');
+    }
+    if (freshSuppressionSnap.exists) {
+      throw new HttpError(
+        409,
+        `${debtorData.name} a demandé l’arrêt des messages (Opt-out actif).`,
+        'opt_out'
+      );
+    }
 
     const freshTenant = freshTenantSnap.data() as {
+      phone?: string;
       plan?: string;
       maxRemindersPerMonth?: number;
       maxRemindersPerDay?: number;
@@ -317,15 +361,66 @@ export async function sendReminderForDebt(
     const freshSec = freshSecuritySnap.exists
       ? (freshSecuritySnap.data() as {
           phoneVerified?: boolean;
+          phoneVerifiedNumber?: string;
           dailyUsage?: { date?: string; count?: number };
         })
       : {};
+    const freshDebt = freshDebtSnap.data() as {
+      remainingAmount?: number;
+      status?: string;
+      lastReminderAt?: string;
+      appliedRuleOffsets?: unknown[];
+      ruleReminderCounts?: Record<string, unknown>;
+    };
 
-    if (hasRealProvider && freshSec.phoneVerified !== true) {
+    if (freshDebt.status === 'payee' || freshDebt.status === 'annulee' || Number(freshDebt.remainingAmount) <= 0) {
+      throw new HttpError(
+        409,
+        'Relance impossible : cette dette est déjà payée ou annulée.',
+        'debt_settled_or_cancelled'
+      );
+    }
+
+    if (
+      hasRealProvider &&
+      (freshSec.phoneVerified !== true || freshSec.phoneVerifiedNumber !== freshTenant.phone)
+    ) {
       throw new HttpError(
         403,
         'Vérifiez le téléphone du propriétaire dans Paramètres.',
         'phone_not_verified'
+      );
+    }
+
+    // Délai minimum de 24h entre deux relances sur la même dette (dans la transaction)
+    const previousLastReminderAt = freshDebt.lastReminderAt;
+    if (previousLastReminderAt) {
+      const lastSentMs = Date.parse(previousLastReminderAt);
+      if (Number.isFinite(lastSentMs) && nowMs - lastSentMs < 24 * 60 * 60 * 1000) {
+        throw new HttpError(
+          409,
+          'Une relance a déjà été envoyée il y a moins de 24 heures pour cette dette.',
+          'cooldown_24h'
+        );
+      }
+    }
+
+    // Maximum 3 relances sur 7 jours glissants pour un même débiteur (toutes dettes confondues)
+    const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+    const rawTimestamps = freshSendStateSnap.exists
+      ? (freshSendStateSnap.data() as { sentTimestamps?: unknown[] }).sentTimestamps
+      : [];
+    const validRecentTimestamps = Array.isArray(rawTimestamps)
+      ? rawTimestamps
+          .map((ts) => Number(ts))
+          .filter((ts) => Number.isFinite(ts) && ts >= sevenDaysAgoMs)
+      : [];
+
+    if (validRecentTimestamps.length >= 3) {
+      throw new HttpError(
+        409,
+        'Limite anti-harcèlement atteinte : maximum 3 relances sur 7 jours glissants pour ce débiteur.',
+        'debtor_weekly_cap'
       );
     }
 
@@ -363,15 +458,49 @@ export async function sendReminderForDebt(
     tx.set(
       securityRef,
       {
-        tenantId,
         dailyUsage: { date: todayDouala, count: currentDailyCount + 1 },
         updatedAt: fieldValue.serverTimestamp(),
       },
       { merge: true }
     );
+
+    tx.update(debtRef, {
+      lastReminderAt: reservedNowIso,
+      updatedAt: fieldValue.serverTimestamp(),
+    });
+
+    tx.set(
+      sendStateRef,
+      {
+        tenantId,
+        debtorId: debtData.debtorId,
+        sentTimestamps: [...validRecentTimestamps, nowMs],
+        updatedAt: fieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    const appliedRuleOffsets = Array.isArray(freshDebt.appliedRuleOffsets)
+      ? freshDebt.appliedRuleOffsets.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+      : [];
+    const ruleReminderCounts: Record<string, number> = {};
+    if (freshDebt.ruleReminderCounts && typeof freshDebt.ruleReminderCounts === 'object') {
+      for (const [k, v] of Object.entries(freshDebt.ruleReminderCounts)) {
+        const num = Number(v);
+        if (Number.isFinite(num)) {
+          ruleReminderCounts[k] = num;
+        }
+      }
+    }
+
+    return {
+      previousLastReminderAt,
+      appliedRuleOffsets,
+      ruleReminderCounts,
+    };
   });
 
-  // Remboursement garanti du quota mensuel + journalier si exception avant envoi réussi
+  // Remboursement garanti (quotas, lastReminderAt, debtorSendState) si exception avant envoi réussi
   let sentSuccessfully = false;
   try {
     const tplSnap = await db.collection(`tenants/${tenantId}/messageTemplates`).get();
@@ -462,14 +591,13 @@ export async function sendReminderForDebt(
 
     const remId = makeDocId('rem');
     const logId = makeDocId('log');
-    const nowIso = new Date(nowFn()).toISOString();
     const batch = db.batch();
 
     batch.set(db.doc(`tenants/${tenantId}/reminders/${remId}`), {
       tenantId,
       debtId,
       debtorId: debtData.debtorId,
-      scheduledAt: nowIso,
+      scheduledAt: reservedNowIso,
       channel: effectiveChannel,
       tone: effectiveTone,
       status: result.status === 'echouee' ? 'echouee' : 'envoyee',
@@ -496,12 +624,28 @@ export async function sendReminderForDebt(
     });
 
     if (result.success && result.status !== 'echouee') {
-      batch.update(debtRef, {
+      const debtUpdate: Record<string, unknown> = {
         reminderCount: fieldValue.increment(1),
-        lastReminderAt: nowIso,
+        lastReminderAt: reservedNowIso,
         paymentLink: paymentUrl,
         updatedAt: fieldValue.serverTimestamp(),
-      });
+      };
+
+      if (trigger === 'cron' && typeof params.ruleOffsetDays === 'number') {
+        const nextAppliedOffsets = [...reservation.appliedRuleOffsets];
+        if (!nextAppliedOffsets.includes(params.ruleOffsetDays)) {
+          nextAppliedOffsets.push(params.ruleOffsetDays);
+        }
+        const offsetKey = String(params.ruleOffsetDays);
+        const nextRuleCounts = {
+          ...reservation.ruleReminderCounts,
+          [offsetKey]: Number(reservation.ruleReminderCounts[offsetKey] || 0) + 1,
+        };
+        debtUpdate.appliedRuleOffsets = nextAppliedOffsets;
+        debtUpdate.ruleReminderCounts = nextRuleCounts;
+      }
+
+      batch.update(debtRef, debtUpdate);
     }
 
     await batch.commit();
@@ -553,13 +697,18 @@ export async function sendReminderForDebt(
     };
   } finally {
     if (!sentSuccessfully) {
-      await refundReminderQuotas({
+      await rollbackReminderReservation({
         db,
         fieldValue,
         tenantRef,
         securityRef,
+        debtRef,
+        sendStateRef,
         currentMonth,
         todayDouala,
+        reservedNowMs: nowMs,
+        reservedNowIso,
+        previousLastReminderAt: reservation.previousLastReminderAt,
         logger: log,
       });
     }

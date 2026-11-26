@@ -480,5 +480,78 @@ describe('Firestore Security Rules (Émulateur)', () => {
       await assertFails(staffDb.doc('tenants/tenant_A/billing/abo_1').get());
       await assertFails(staffDb.doc('tenants/tenant_A/paymentAnomalies/anom_1').get());
     });
+
+    it('6. D1/D2/D3/D5 — Règles de confidentialité OTP, opt-out irréversible, suppressions, debtorSendState et champs serveur', async () => {
+      const ownerDb = testEnv.authenticatedContext('owner_A', { email: 'ownerA@etoile.cm', email_verified: true }).firestore();
+      const staffDb = testEnv.authenticatedContext('staff_A', { email: 'staffA@etoile.cm', email_verified: true }).firestore();
+
+      await testEnv.withSecurityRulesDisabled(async (ctx) => {
+        const admin = ctx.firestore();
+        await admin.doc('tenantSecurityPrivate/tenant_A').set({
+          tenantId: 'tenant_A',
+          phoneHash: 'secret_hmac',
+          phoneSalt: 'salt',
+        });
+        await admin.doc('tenants/tenant_A/suppressions/hash_1').set({
+          tenantId: 'tenant_A',
+          phoneHash: 'hash_1',
+          reason: 'whatsapp_stop',
+          createdAt: firebase.firestore.Timestamp.now(),
+        });
+        await admin.doc('tenants/tenant_A/debtorSendState/deb_1').set({
+          tenantId: 'tenant_A',
+          debtorId: 'deb_1',
+          sentTimestamps: [1732530000000],
+          updatedAt: firebase.firestore.Timestamp.now(),
+        });
+      });
+
+      // D1 : tenantSecurityPrivate interdit en lecture et écriture pour tous les clients
+      await assertFails(ownerDb.doc('tenantSecurityPrivate/tenant_A').get());
+      await assertFails(staffDb.doc('tenantSecurityPrivate/tenant_A').get());
+      await assertFails(ownerDb.doc('tenantSecurityPrivate/tenant_A').set({ phoneHash: 'x' }));
+
+      // D2 : optOut false -> true autorisé, mais true -> false refusé ; suppressions interdites
+      await assertSucceeds(
+        staffDb.doc('tenants/tenant_A/debtors/deb_1').update({ optOut: true, updatedAt: serverTs() })
+      );
+      await assertFails(
+        ownerDb.doc('tenants/tenant_A/debtors/deb_1').update({ optOut: false, updatedAt: serverTs() })
+      );
+      await assertFails(ownerDb.doc('tenants/tenant_A/suppressions/hash_1').get());
+      await assertFails(ownerDb.doc('tenants/tenant_A/suppressions/hash_1').delete());
+
+      // D3 : debtorSendState lisible par les membres, écriture interdite
+      await assertSucceeds(staffDb.doc('tenants/tenant_A/debtorSendState/deb_1').get());
+      await assertFails(
+        ownerDb.doc('tenants/tenant_A/debtorSendState/deb_1').set({
+          tenantId: 'tenant_A',
+          debtorId: 'deb_1',
+          sentTimestamps: [],
+          updatedAt: serverTs(),
+        })
+      );
+
+      // D5 : champs serveur appliedRuleOffsets, ruleReminderCounts et activeDebtsCount protégés
+      await assertFails(
+        ownerDb.doc('tenants/tenant_A/debts/debt_1').update({
+          appliedRuleOffsets: [0],
+          updatedAt: serverTs(),
+        })
+      );
+      await assertFails(
+        ownerDb.doc('tenants/tenant_A/debts/debt_1').update({
+          ruleReminderCounts: { '0': 0 },
+          updatedAt: serverTs(),
+        })
+      );
+      await assertFails(
+        ownerDb.doc('tenants/tenant_A').update({
+          activeDebtsCount: 99,
+          updatedAt: serverTs(),
+        })
+      );
+    });
   });
 });
+

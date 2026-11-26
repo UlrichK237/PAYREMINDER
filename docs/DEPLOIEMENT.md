@@ -15,6 +15,8 @@ Configurez ces variables sur votre plateforme d'hébergement (Cloud Run, VPS Nod
 | `APP_URL` | Oui | URL publique HTTPS de l'application (ex. `https://app.payreminder.cm`). |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Recommandée | JSON complet du compte de service Firebase Admin (repli sur `applicationDefault` si vide sur GCP/Cloud Run). |
 | `CRON_SECRET` | **Oui** | Secret aléatoire fort (>= 32 octets) exigé dans l'en-tête `x-cron-secret` des tâches planifiées. Retourne `503` si vide. |
+| `OTP_PEPPER` | **Oui (en prod)** | Secret HMAC-SHA256 (>= 32 octets) pour le hachage des codes OTP et des numéros en liste d'opposition (`suppressions`). Retourne `503` si vide en production. |
+| `ALLOWED_PHONE_PREFIXES` | Non (`+237`) | Liste d'indicatifs autorisés (séparés par virgule) pour l'envoi de codes SMS OTP anti-pumping (défaut `+237`). |
 | `WHATSAPP_ACCESS_TOKEN` | Optionnel | Jeton d'accès Meta WhatsApp Cloud API (mode simulation si vide). |
 | `WHATSAPP_PHONE_NUMBER_ID` | Optionnel | ID du numéro WhatsApp Business Meta. |
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | Oui (si WhatsApp) | Jeton de vérification GET `/api/webhooks/whatsapp`. |
@@ -98,6 +100,17 @@ curl -X POST "https://VOTRE_DOMAINE/api/reports/send-monthly" \
   -d "{}"
 ```
 
+### Politique TTL Firestore sur `cronLocks`
+
+Les documents `cronLocks/*` (verrous quart d'heure `run-reminders-*` et curseur `run-reminders-cursor`) incluent un champ `expiresAt` (Timestamp Firestore à `+7 jours`). Activez une politique **Time-to-live (TTL)** dans Firebase Console / `gcloud` afin que Firestore purge automatiquement les anciens verrous :
+
+```bash
+gcloud firestore fields ttls update expiresAt \
+  --collection-group=cronLocks \
+  --enable-ttl \
+  --database=VOTRE_DATABASE_ID
+```
+
 ---
 
 ## 3. Configuration des Webhooks
@@ -124,7 +137,8 @@ curl -X POST "https://VOTRE_DOMAINE/api/reports/send-monthly" \
 ## 4. Build et démarrage en production
 
 ```bash
-npm ci
+npm install --no-audit --no-fund
 npm run build
 npm run start
 ```
+

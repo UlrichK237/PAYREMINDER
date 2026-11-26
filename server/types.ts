@@ -77,6 +77,8 @@ export interface ServerSecrets {
   emailProviderApiKey: string;
   emailFromAddress: string;
   cronSecret: string;
+  otpPepper: string;
+  allowedPhonePrefixes: string;
   allowPlanChangeWithoutPayment: boolean;
   appBaseUrl: string;
 }
@@ -119,4 +121,6 @@ export interface AppDeps {
   simulationRoutesEnabled?: boolean;
   providers?: AppProviders;
   logger?: LoggerLike;
+  cronTimeBudgetMs?: number;
+  cronMaxConcurrency?: number;
 }

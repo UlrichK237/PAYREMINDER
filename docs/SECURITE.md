@@ -15,9 +15,9 @@ Toute décision critique liée à la facturation, aux quotas, au moteur de relan
 | `GET /api/config/capabilities` | Public (aucun secret exposé) | Indique les capacités actives (`whatsappConfigured`, `smsConfigured`, `simulationMode`, `simulationRoutes`, `timezone`) |
 | `POST /api/billing/checkout` | `requireAuth` + `requireTenantOwner` + `uidRateLimiter` | Crée un paiement d'abonnement `pending` avec le prix officiel `PLANS` |
 | `POST /api/billing/change-plan` | `requireNonProduction` (`404` en prod) + `requireAuth` + `requireTenantOwner` + `uidRateLimiter` | Changement de forfait dev uniquement si `ALLOW_PLAN_CHANGE_WITHOUT_PAYMENT=true` + log `auditLogs` |
-| `POST /api/debtors/erase` | `requireAuth` + `requireTenantOwner` + `uidRateLimiter` | Effacement complet RGPD du débiteur, dettes, paiements, relances, messageLogs + trace `auditLogs` |
-| `POST /api/security/send-phone-code` | `requireAuth` + `requireTenantOwner` + `phoneCodeRateLimiter` (3/h) | Génère un code OTP haché (`sha256` + sel) et l'envoie par SMS |
-| `POST /api/security/verify-phone-code` | `requireAuth` + `requireTenantOwner` + `uidRateLimiter` | Vérifie le code OTP (max 5 essais), active `phoneVerified` + trace `auditLogs` |
+| `POST /api/debtors/erase` | `requireAuth` + `requireTenantOwner` + `uidRateLimiter` | Effacement complet RGPD du débiteur, dettes, paiements, relances, messageLogs + conservation `suppressions` si opt-out + trace `auditLogs` |
+| `POST /api/security/send-phone-code` | `requireAuth` + `requireTenantOwner` + `phoneCodeIpRateLimiter` (10/h) + `phoneCodeRateLimiter` (3/h) | Génère un code OTP HMAC-SHA256 (`OTP_PEPPER`) stocké dans `tenantSecurityPrivate` (max 5/24h par numéro, préfixe `ALLOWED_PHONE_PREFIXES`) |
+| `POST /api/security/verify-phone-code` | `requireAuth` + `requireTenantOwner` + `uidRateLimiter` | Vérifie le code OTP (max 5 essais), active `phoneVerified` + `phoneVerifiedNumber` + trace `auditLogs` |
 | `POST /api/reminders/dispatch` | `requireAuth` + `requireTenantMember` + `uidRateLimiter` | Envoi manuel via `sendReminderForDebt` + trace `auditLogs` (`manual_reminder`) |
 | `POST /api/payments/create-link` | `requireAuth` + `requireTenantMember` + `uidRateLimiter` | Génère un lien Mobile Money depuis `remainingAmount` lu en base |
 | `POST /api/reports/send-tenant-email` | `requireAuth` + `requireTenantMember` + `uidRateLimiter` | Envoie le rapport mensuel de l'entreprise (forfaits Pro/Business, HTML échappé) |
@@ -42,27 +42,31 @@ Toute décision critique liée à la facturation, aux quotas, au moteur de relan
 | `/tenantInvites/{inviteId}` | Propriétaire du tenant ou invité correspondant | Création/MAJ/suppression par le propriétaire uniquement |
 | `/tenants/{tenantId}` | Membres actifs (`isTenantMember`) | Création gratuite atomique avec `users/{uid}` ; MAJ par le propriétaire **sans toucher aux champs privilégiés** (`plan`, `maxDebtors`, `maxRemindersPerMonth`, `maxRemindersPerDay`, `planExpiresAt`, `planStatus`, `remindersUsedThisMonth`, `quotaResetMonth`) ; suppression interdite |
 | `/tenants/{tenantId}/users/{uid}` | Membres actifs | Propriétaire (ou création initiale par `ownerId`) ; rétrogradation/suppression du propriétaire interdite |
-| `/tenants/{tenantId}/debtors/{debtorId}` | Membres actifs | Membres actifs ; création soumise au format E.164 et à la preuve de consentement (`consentConfirmedAt` + `consentConfirmedBy == request.auth.uid`) |
-| `/tenants/{tenantId}/debts/{debtId}` | Membres actifs | Membres actifs (montants cohérents, `debtorId` existant dans le même tenant) |
+| `/tenants/{tenantId}/debtors/{debtorId}` | Membres actifs | Membres actifs ; création soumise au format E.164 et à la preuve de consentement ; `optOut` irréversible (`true -> false` refusé) |
+| `/tenants/{tenantId}/debts/{debtId}` | Membres actifs | Membres actifs (montants cohérents, `debtorId` existant dans le même tenant) ; champs serveur `appliedRuleOffsets` / `ruleReminderCounts` protégés |
 | `/tenants/{tenantId}/payments/{paymentId}` | Membres actifs | Création par membres actifs (montant > 0), modification/suppression client interdites |
 | `/tenants/{tenantId}/reminderRules/{ruleId}` | Membres actifs | Propriétaire uniquement (`isTenantOwnerAfter` lors de l'initialisation) |
 | `/tenants/{tenantId}/messageTemplates/{templateId}` | Membres actifs | Propriétaire uniquement (`isTenantOwnerAfter` lors de l'initialisation) |
 | `/tenants/{tenantId}/reminders/{reminderId}` | Membres actifs | **Interdite côté client** (écriture serveur `firebase-admin` uniquement) |
 | `/tenants/{tenantId}/messageLogs/{logId}` | Membres actifs | **Interdite côté client** (écriture serveur `firebase-admin` uniquement) |
+| `/tenants/{tenantId}/suppressions/{phoneHash}` | **Interdite côté client** | **Interdite côté client** (liste d'opposition STOP HMAC serveur uniquement) |
+| `/tenants/{tenantId}/debtorSendState/{debtorId}` | Membres actifs | **Interdite côté client** (état glissant 7 jours écrit atomiquement par le serveur) |
 | `/tenants/{tenantId}/billing/{paymentRef}` | Propriétaire uniquement | **Interdite côté client** (serveur uniquement) |
 | `/tenants/{tenantId}/paymentAnomalies/{anomalyId}` | Propriétaire uniquement | **Interdite côté client** (serveur uniquement) |
 | `/tenants/{tenantId}/auditLogs/{logId}` | Propriétaire uniquement | **Interdite côté client** (serveur uniquement) |
-| `/tenantSecurity/{tenantId}` | `get` par membres actifs (`list` interdit) | **Interdite côté client** (serveur uniquement) |
-| `/cronLocks/{lockId}` | **Interdite côté client** | **Interdite côté client** (serveur uniquement) |
+| `/tenantSecurity/{tenantId}` | `get` par membres actifs (`list` interdit) | **Interdite côté client** (`dailyUsage`, `phoneVerified`, `phoneVerifiedAt`, `phoneVerifiedNumber` uniquement) |
+| `/tenantSecurityPrivate/{tenantId}` | **Interdite côté client** | **Interdite côté client** (secrets OTP, sel/hash, compteurs anti SMS-pumping, états abonnement) |
+| `/cronLocks/{lockId}` | **Interdite côté client** | **Interdite côté client** (verrous + curseur d'équité avec TTL `expiresAt` à 7 jours) |
 
 ---
 
 ## Journalisation, confidentialité et anti-abus
 
 - **Journalisation structurée (`server/logger.ts`, Pino)** : aucun `console.*` côté serveur ; les numéros de téléphone sont automatiquement masqués (`***456`) et les jetons/secrets (`authorization`, `cronSecret`, signatures, `apiKey`, `devCode`) sont remplacés par `[REDACTED]`.
-- **Moteur unifié de relances (`server/services/reminderService.ts`)** : applique le délai 24 h par dette, le plafond 3 relances / 7 jours par débiteur, le plafond journalier (`free: 10`, `starter: 40`, `pro: 150`, `business: 500`), le quota mensuel transactionnel avec remboursement automatique en cas d'échec, `phoneVerified` si fournisseur réel configuré, et la mention `"Répondez STOP pour ne plus recevoir de messages."` sur tout SMS/repli.
+- **Gestion d'erreurs JSON stricte** : toute erreur HTTP (`400` JSON malformé, `413` > 100 Ko, `404` `/api/*`, `500` interne) renvoie du JSON avec `errorId` sans jamais exposer de HTML ni de pile d'exécution.
+- **Moteur unifié de relances (`server/services/reminderService.ts`)** : applique atomiquement dans une transaction Firestore le délai 24 h par dette, le plafond 3 relances / 7 jours par débiteur (`debtorSendState`), la liste d'opposition irréversible (`suppressions`), le plafond journalier, le quota mensuel (avec rollback complet en cas d'échec fournisseur), `phoneVerified && phoneVerifiedNumber === tenant.phone`, et la mention `"Répondez STOP pour ne plus recevoir de messages."` sur tout SMS/repli.
 - **Validation des modèles (`src/utils/templateValidation.ts`)** : bloque URLs externes, variables inconnues et termes d'intimidation côté client et serveur.
-- **Tâches planifiées (Cloud Scheduler)** : exécutées via `CRON_SECRET` avec comparaison en temps constant, verrous 15 minutes (`cronLocks`) et budget d'exécution de 50 s.
+- **Tâches planifiées (Cloud Scheduler)** : exécutées via `CRON_SECRET` avec comparaison en temps constant, requête optimisée `collectionGroup('debts')`, rattrapage J+0..J+3 (`appliedRuleOffsets` / `ruleReminderCounts`), curseur d'équité (`run-reminders-cursor`), verrous `cronLocks` (TTL 7 j) et budget d'exécution de 50 s.
 
 ---
 

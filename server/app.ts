@@ -1,11 +1,14 @@
 import crypto from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { type IncrementResponse, type Options, type Store } from 'express-rate-limit';
 import helmet from 'helmet';
 import {
   getServerSecrets,
+  hmacPhoneCode,
+  hmacPhoneNumber,
   HttpError,
   isProduction as defaultIsProduction,
+  resolveOtpPepper,
   simulationRoutesEnabled as defaultSimRoutesEnabled,
 } from './config';
 import { logger as defaultLogger } from './logger';
@@ -97,9 +100,51 @@ function makeDocId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
-function hashPhoneCode(salt: string, code: string): string {
-  return crypto.createHash('sha256').update(`${salt}:${code}`).digest('hex');
+class ClockAwareMemoryStore implements Store {
+  private windowMs = 60_000;
+  private readonly hits = new Map<string, { totalHits: number; resetTimeMs: number }>();
+  public readonly localKeys = true;
+
+  constructor(private readonly nowFn: () => number) {}
+
+  init(options: Options): void {
+    this.windowMs = options.windowMs;
+  }
+
+  increment(key: string): IncrementResponse {
+    const now = this.nowFn();
+    const current = this.hits.get(key);
+    if (!current || current.resetTimeMs <= now) {
+      const next = { totalHits: 1, resetTimeMs: now + this.windowMs };
+      this.hits.set(key, next);
+      return { totalHits: next.totalHits, resetTime: new Date(next.resetTimeMs) };
+    }
+    current.totalHits += 1;
+    return { totalHits: current.totalHits, resetTime: new Date(current.resetTimeMs) };
+  }
+
+  decrement(key: string): void {
+    const current = this.hits.get(key);
+    if (current && current.totalHits > 0) {
+      current.totalHits -= 1;
+    }
+  }
+
+  resetKey(key: string): void {
+    this.hits.delete(key);
+  }
 }
+
+const LEGACY_OTP_PUBLIC_FIELDS = [
+  'phoneHash',
+  'phoneSalt',
+  'phoneCodeExpiresAt',
+  'phoneVerifyAttempts',
+  'phoneTarget',
+] as const;
+
+const ACTIVE_DEBT_STATUSES = ['en_cours', 'partiellement_payee', 'en_retard'] as const;
+const CRON_LOCK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function getQuarterHourSlotKeyDouala(now = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -304,6 +349,7 @@ export function createApp(deps: AppDeps) {
     max: 30,
     standardHeaders: true,
     legacyHeaders: false,
+    store: new ClockAwareMemoryStore(nowFn),
     keyGenerator: (req) => (req as AuthenticatedRequest).auth?.uid || 'anonymous',
     message: { error: 'Trop de requêtes (limite : 30 par minute). Patientez quelques instants.' },
   });
@@ -313,12 +359,22 @@ export function createApp(deps: AppDeps) {
     max: 3,
     standardHeaders: true,
     legacyHeaders: false,
+    store: new ClockAwareMemoryStore(nowFn),
     keyGenerator: (req) => {
       const uid = (req as AuthenticatedRequest).auth?.uid || 'anonymous';
       const tenantId = typeof req.body?.tenantId === 'string' ? req.body.tenantId : 'unknown';
       return `${uid}:${tenantId}`;
     },
     message: { error: 'Limite de 3 codes par heure atteinte. Réessayez plus tard.' },
+  });
+
+  const phoneCodeIpRateLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: new ClockAwareMemoryStore(nowFn),
+    message: { error: 'Trop de demandes de vérification depuis cette adresse IP (limite : 10 par heure).' },
   });
 
   function handleRouteError(res: Response, error: unknown, contextLabel: string): void {
@@ -401,6 +457,18 @@ export function createApp(deps: AppDeps) {
           optOut: true,
           updatedAt: fieldValue.serverTimestamp(),
         });
+        const targetPhone = debtor.phone || normalizedFrom;
+        if (targetPhone && /^\+[1-9][0-9]{7,15}$/.test(targetPhone)) {
+          const pepper = resolveOtpPepper(getSecrets(), isProd);
+          const phoneHash = hmacPhoneNumber(pepper, targetPhone);
+          batch.set(db.doc(`tenants/${resolvedTenantId}/suppressions/${phoneHash}`), {
+            tenantId: resolvedTenantId,
+            phoneHash,
+            reason: 'whatsapp_stop',
+            sourceDebtorId: debtorDoc.id,
+            createdAt: fieldValue.serverTimestamp(),
+          });
+        }
       } else if (analysis.intent === 'promise' && analysis.promiseDate) {
         const updatedNote = `${debtor.note ? `${debtor.note} | ` : ''}Promesse (${analysis.promiseDate}) : ${params.messageText}`.slice(
           0,
@@ -428,6 +496,19 @@ export function createApp(deps: AppDeps) {
 
       if (!targetSnap.empty) {
         await applyForDebtorDoc(targetSnap.docs[0], params.tenantId);
+      } else if (
+        analysis.intent === 'opt_out' &&
+        normalizedFrom &&
+        /^\+[1-9][0-9]{7,15}$/.test(normalizedFrom)
+      ) {
+        const pepper = resolveOtpPepper(getSecrets(), isProd);
+        const phoneHash = hmacPhoneNumber(pepper, normalizedFrom);
+        await db.doc(`tenants/${params.tenantId}/suppressions/${phoneHash}`).set({
+          tenantId: params.tenantId,
+          phoneHash,
+          reason: 'whatsapp_stop',
+          createdAt: fieldValue.serverTimestamp(),
+        });
       }
     } else if (normalizedFrom) {
       const matchedDebtors = await db
@@ -509,7 +590,8 @@ export function createApp(deps: AppDeps) {
         };
       }
 
-      const debtSnap = await tx.get(debtDocRef);
+      const tenantRef = db.doc(`tenants/${params.tenantId}`);
+      const [debtSnap, tenantSnap] = await Promise.all([tx.get(debtDocRef), tx.get(tenantRef)]);
       const nowIso = new Date(nowFn()).toISOString();
 
       if (!debtSnap.exists) {
@@ -603,6 +685,16 @@ export function createApp(deps: AppDeps) {
         status: newStatus,
         updatedAt: fieldValue.serverTimestamp(),
       });
+
+      if (newStatus === 'payee' && tenantSnap.exists) {
+        const tenantData = tenantSnap.data() as { activeDebtsCount?: number };
+        if (typeof tenantData.activeDebtsCount === 'number' && tenantData.activeDebtsCount > 0) {
+          tx.update(tenantRef, {
+            activeDebtsCount: tenantData.activeDebtsCount - 1,
+            updatedAt: fieldValue.serverTimestamp(),
+          });
+        }
+      }
 
       if (excessAmount > 0) {
         tx.set(anomalyDocRef, {
@@ -813,6 +905,8 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      const debtorData = (debtorSnap.data() || {}) as { phone?: string; optOut?: boolean };
+
       const [debtsSnap, paymentsSnap, remindersSnap, logsSnap] = await Promise.all([
         db.collection(`tenants/${tenantId}/debts`).where('debtorId', '==', debtorId).get(),
         db.collection(`tenants/${tenantId}/payments`).where('debtorId', '==', debtorId).get(),
@@ -820,8 +914,35 @@ export function createApp(deps: AppDeps) {
         db.collection(`tenants/${tenantId}/messageLogs`).where('debtorId', '==', debtorId).get(),
       ]);
 
+      const erasedActiveDebts = debtsSnap.docs.filter((d) => {
+        const data = (d.data() || {}) as { status?: string; remainingAmount?: number };
+        return (
+          data.status !== 'payee' &&
+          data.status !== 'annulee' &&
+          Number(data.remainingAmount || 0) > 0
+        );
+      }).length;
+
+      if (
+        debtorData.optOut === true &&
+        debtorData.phone &&
+        /^\+[1-9][0-9]{7,15}$/.test(debtorData.phone)
+      ) {
+        const pepper = resolveOtpPepper(getSecrets(), isProd);
+        const phoneHash = hmacPhoneNumber(pepper, debtorData.phone);
+        await db.doc(`tenants/${tenantId}/suppressions/${phoneHash}`).set({
+          tenantId,
+          phoneHash,
+          reason: 'debtor_erase_opt_out',
+          sourceDebtorId: debtorId,
+          createdAt: fieldValue.serverTimestamp(),
+        });
+      }
+
+      const sendStateRef = db.doc(`tenants/${tenantId}/debtorSendState/${debtorId}`);
       const refsToDelete = [
         { path: debtorRef.path, ref: debtorRef },
+        { path: sendStateRef.path, ref: sendStateRef },
         ...debtsSnap.docs.map((d) => ({ path: d.ref.path, ref: d.ref })),
         ...paymentsSnap.docs.map((d) => ({ path: d.ref.path, ref: d.ref })),
         ...remindersSnap.docs.map((d) => ({ path: d.ref.path, ref: d.ref })),
@@ -829,6 +950,21 @@ export function createApp(deps: AppDeps) {
       ];
 
       await deleteRefsInBatches(db, refsToDelete);
+
+      if (erasedActiveDebts > 0) {
+        const tenantRef = db.doc(`tenants/${tenantId}`);
+        await db.runTransaction(async (tx) => {
+          const tSnap = await tx.get(tenantRef);
+          if (!tSnap.exists) return;
+          const tData = tSnap.data() as { activeDebtsCount?: number };
+          if (typeof tData.activeDebtsCount === 'number') {
+            tx.update(tenantRef, {
+              activeDebtsCount: Math.max(0, tData.activeDebtsCount - erasedActiveDebts),
+              updatedAt: fieldValue.serverTimestamp(),
+            });
+          }
+        });
+      }
 
       const counts = {
         deletedDebtor: 1,
@@ -865,77 +1001,149 @@ export function createApp(deps: AppDeps) {
   });
 
   // ==========================================================================
-  // 4. Vérification téléphone du propriétaire (aucune PII dans les logs)
+  // 4. Vérification téléphone du propriétaire (secrets privés + anti SMS-pumping)
   // ==========================================================================
-  app.post('/api/security/send-phone-code', requireAuth, phoneCodeRateLimiter, async (req, res) => {
-    try {
-      const { uid } = (req as AuthenticatedRequest).auth!;
-      const { tenantId } = req.body as { tenantId?: unknown };
+  app.post(
+    '/api/security/send-phone-code',
+    requireAuth,
+    phoneCodeIpRateLimiter,
+    phoneCodeRateLimiter,
+    async (req, res) => {
+      try {
+        const { uid } = (req as AuthenticatedRequest).auth!;
+        const { tenantId } = req.body as { tenantId?: unknown };
 
-      if (!isValidId(tenantId)) {
-        res.status(400).json({ error: 'Identifiant entreprise invalide.' });
-        return;
+        if (!isValidId(tenantId)) {
+          res.status(400).json({ error: 'Identifiant entreprise invalide.' });
+          return;
+        }
+
+        await requireTenantOwner(uid, tenantId);
+
+        const secrets = getSecrets();
+        const pepper = resolveOtpPepper(secrets, isProd);
+
+        const tenantSnap = await db.doc(`tenants/${tenantId}`).get();
+        if (!tenantSnap.exists) {
+          res.status(404).json({ error: 'Entreprise introuvable.' });
+          return;
+        }
+        const tenantData = tenantSnap.data() as { phone?: string };
+        const phone = (tenantData.phone || '').trim();
+        if (!/^\+[1-9][0-9]{7,15}$/.test(phone)) {
+          res.status(400).json({ error: 'Numéro de téléphone de l’entreprise invalide (+237...).' });
+          return;
+        }
+
+        const allowedPrefixes = (secrets.allowedPhonePrefixes || '+237')
+          .split(',')
+          .map((p) => p.trim())
+          .filter(Boolean);
+        if (allowedPrefixes.length > 0 && !allowedPrefixes.some((prefix) => phone.startsWith(prefix))) {
+          res.status(400).json({
+            error: `Indicatif téléphonique non autorisé pour la vérification (préfixes acceptés : ${allowedPrefixes.join(', ')}).`,
+          });
+          return;
+        }
+
+        const nowMs = nowFn();
+        const oneDayAgoMs = nowMs - 24 * 60 * 60 * 1000;
+        const phoneDestHash = hmacPhoneNumber(pepper, phone);
+        const code = crypto.randomInt(100000, 1000000).toString();
+        const salt = crypto.randomBytes(16).toString('hex');
+        const codeHash = hmacPhoneCode(pepper, salt, code);
+        const expiresAt = new Date(nowMs + 10 * 60 * 1000).toISOString();
+
+        const privRef = db.doc(`tenantSecurityPrivate/${tenantId}`);
+        const pubRef = db.doc(`tenantSecurity/${tenantId}`);
+
+        await db.runTransaction(async (tx) => {
+          const [privSnap, pubSnap] = await Promise.all([tx.get(privRef), tx.get(pubRef)]);
+          const privData = privSnap.exists
+            ? (privSnap.data() as { otpHistory?: Record<string, unknown[]> })
+            : {};
+
+          const rawHistory = privData.otpHistory || {};
+          const nextHistory: Record<string, number[]> = {};
+          for (const [k, vals] of Object.entries(rawHistory)) {
+            if (!Array.isArray(vals)) continue;
+            const pruned = vals.map((v) => Number(v)).filter((ts) => Number.isFinite(ts) && ts >= oneDayAgoMs);
+            if (pruned.length > 0) {
+              nextHistory[k] = pruned;
+            }
+          }
+
+          const destTimestamps = nextHistory[phoneDestHash] || [];
+          if (destTimestamps.length >= 5) {
+            throw new HttpError(
+              429,
+              'Limite de 5 codes SMS par 24 heures atteinte pour ce numéro de téléphone.'
+            );
+          }
+          nextHistory[phoneDestHash] = [...destTimestamps, nowMs];
+
+          tx.set(
+            privRef,
+            {
+              tenantId,
+              phoneHash: codeHash,
+              phoneSalt: salt,
+              phoneCodeExpiresAt: expiresAt,
+              phoneVerifyAttempts: 0,
+              phoneTarget: phone,
+              otpHistory: nextHistory,
+              updatedAt: fieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+
+          // Migration : supprime les anciens champs sensibles s'ils existent sur tenantSecurity
+          if (pubSnap.exists) {
+            const pubData = pubSnap.data() || {};
+            const legacyCleanup: Record<string, unknown> = {};
+            let hasLegacy = false;
+            for (const field of LEGACY_OTP_PUBLIC_FIELDS) {
+              if (field in pubData) {
+                legacyCleanup[field] = fieldValue.delete();
+                hasLegacy = true;
+              }
+            }
+            if (hasLegacy) {
+              tx.update(pubRef, {
+                ...legacyCleanup,
+                updatedAt: fieldValue.serverTimestamp(),
+              });
+            }
+          }
+        });
+
+        const smsProvider = createSmsProvider(secrets);
+        const sendRes = await smsProvider.sendSms({
+          to: phone,
+          message: `PayReminder : votre code de vérification est ${code} (valable 10 minutes).`,
+        });
+
+        if (!sendRes.success) {
+          res.status(502).json({ error: 'Échec de l’envoi du SMS de vérification.' });
+          return;
+        }
+
+        if (sendRes.simulated) {
+          log.info({ tenantId, simulated: true }, 'OTP verification code generated');
+        }
+
+        res.json({
+          ok: true,
+          simulated: sendRes.simulated,
+          phone,
+          expiresAt,
+          ...(!isProd && sendRes.simulated ? { devCode: code } : {}),
+        });
+      } catch (error) {
+        handleRouteError(res, error, 'POST /api/security/send-phone-code');
       }
-
-      await requireTenantOwner(uid, tenantId);
-
-      const tenantSnap = await db.doc(`tenants/${tenantId}`).get();
-      if (!tenantSnap.exists) {
-        res.status(404).json({ error: 'Entreprise introuvable.' });
-        return;
-      }
-      const tenantData = tenantSnap.data() as { phone?: string };
-      const phone = tenantData.phone || '';
-      if (!/^\+[1-9][0-9]{7,15}$/.test(phone)) {
-        res.status(400).json({ error: 'Numéro de téléphone de l’entreprise invalide (+237...).' });
-        return;
-      }
-
-      const code = crypto.randomInt(100000, 1000000).toString();
-      const salt = crypto.randomBytes(16).toString('hex');
-      const codeHash = hashPhoneCode(salt, code);
-      const expiresAt = new Date(nowFn() + 10 * 60 * 1000).toISOString();
-
-      await db.doc(`tenantSecurity/${tenantId}`).set(
-        {
-          tenantId,
-          phoneHash: codeHash,
-          phoneSalt: salt,
-          phoneCodeExpiresAt: expiresAt,
-          phoneVerifyAttempts: 0,
-          phoneTarget: phone,
-          updatedAt: fieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      const secrets = getSecrets();
-      const smsProvider = createSmsProvider(secrets);
-      const sendRes = await smsProvider.sendSms({
-        to: phone,
-        message: `PayReminder : votre code de vérification est ${code} (valable 10 minutes).`,
-      });
-
-      if (!sendRes.success) {
-        res.status(502).json({ error: 'Échec de l’envoi du SMS de vérification.' });
-        return;
-      }
-
-      if (sendRes.simulated) {
-        log.info({ tenantId, simulated: true }, 'OTP verification code generated');
-      }
-
-      res.json({
-        ok: true,
-        simulated: sendRes.simulated,
-        phone,
-        expiresAt,
-        ...(!isProd && sendRes.simulated ? { devCode: code } : {}),
-      });
-    } catch (error) {
-      handleRouteError(res, error, 'POST /api/security/send-phone-code');
     }
-  });
+  );
 
   app.post('/api/security/verify-phone-code', requireAuth, uidRateLimiter, async (req, res) => {
     try {
@@ -949,66 +1157,126 @@ export function createApp(deps: AppDeps) {
 
       await requireTenantOwner(uid, tenantId);
 
+      const secrets = getSecrets();
+      const pepper = resolveOtpPepper(secrets, isProd);
       const cleanCode = code.trim();
-      const securityRef = db.doc(`tenantSecurity/${tenantId}`);
+      const privRef = db.doc(`tenantSecurityPrivate/${tenantId}`);
+      const pubRef = db.doc(`tenantSecurity/${tenantId}`);
+      const tenantRef = db.doc(`tenants/${tenantId}`);
       const nowMs = nowFn();
 
       const verificationResult = await db.runTransaction(async (tx) => {
-        const snap = await tx.get(securityRef);
-        if (!snap.exists) {
-          throw new HttpError(400, 'Aucun code actif. Demandez un nouveau code.');
+        const [privSnap, pubSnap, tenantSnap] = await Promise.all([
+          tx.get(privRef),
+          tx.get(pubRef),
+          tx.get(tenantRef),
+        ]);
+
+        // Migration : suppression systématique des anciens champs OTP sur tenantSecurity
+        if (pubSnap.exists) {
+          const pubData = pubSnap.data() || {};
+          const legacyCleanup: Record<string, unknown> = {};
+          let hasLegacy = false;
+          for (const field of LEGACY_OTP_PUBLIC_FIELDS) {
+            if (field in pubData) {
+              legacyCleanup[field] = fieldValue.delete();
+              hasLegacy = true;
+            }
+          }
+          if (hasLegacy) {
+            tx.update(pubRef, {
+              ...legacyCleanup,
+              updatedAt: fieldValue.serverTimestamp(),
+            });
+          }
         }
 
-        const sec = snap.data() as {
+        if (!privSnap.exists) {
+          return { outcome: 'no_code' as const };
+        }
+
+        const sec = privSnap.data() as {
           phoneHash?: string;
           phoneSalt?: string;
           phoneCodeExpiresAt?: string;
           phoneVerifyAttempts?: number;
+          phoneTarget?: string;
         };
 
         if (!sec.phoneHash || !sec.phoneSalt || !sec.phoneCodeExpiresAt) {
-          throw new HttpError(400, 'Aucun code actif. Demandez un nouveau code.');
+          return { outcome: 'no_code' as const };
         }
 
         const attempts = Number(sec.phoneVerifyAttempts || 0);
         if (attempts >= 5) {
-          throw new HttpError(429, 'Nombre maximal de tentatives atteint (5). Demandez un nouveau code.');
+          return { outcome: 'too_many_attempts' as const };
         }
 
         if (nowMs > Date.parse(sec.phoneCodeExpiresAt)) {
-          throw new HttpError(400, 'Code expiré (10 minutes). Demandez un nouveau code.');
+          return { outcome: 'expired' as const };
         }
 
-        const candidateHash = hashPhoneCode(sec.phoneSalt, cleanCode);
+        const candidateHash = hmacPhoneCode(pepper, sec.phoneSalt, cleanCode);
         if (!constantTimeEquals(candidateHash, sec.phoneHash)) {
           tx.set(
-            securityRef,
+            privRef,
             {
               phoneVerifyAttempts: attempts + 1,
               updatedAt: fieldValue.serverTimestamp(),
             },
             { merge: true }
           );
-          return { matched: false, remainingAttempts: Math.max(0, 5 - (attempts + 1)) };
+          return {
+            outcome: 'mismatch' as const,
+            remainingAttempts: Math.max(0, 5 - (attempts + 1)),
+          };
         }
 
+        const tenantPhone = tenantSnap.exists ? ((tenantSnap.data() as { phone?: string }).phone || '') : '';
+        const verifiedPhone = (sec.phoneTarget || tenantPhone).trim();
+
         tx.set(
-          securityRef,
+          pubRef,
           {
             phoneVerified: true,
             phoneVerifiedAt: new Date(nowMs).toISOString(),
+            phoneVerifiedNumber: verifiedPhone,
+            updatedAt: fieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        tx.set(
+          privRef,
+          {
             phoneHash: fieldValue.delete(),
             phoneSalt: fieldValue.delete(),
             phoneCodeExpiresAt: fieldValue.delete(),
+            phoneTarget: fieldValue.delete(),
             phoneVerifyAttempts: 0,
             updatedAt: fieldValue.serverTimestamp(),
           },
           { merge: true }
         );
-        return { matched: true, remainingAttempts: 5 };
+
+        return { outcome: 'matched' as const, verifiedPhone };
       });
 
-      if (!verificationResult.matched) {
+      if (verificationResult.outcome === 'no_code') {
+        res.status(400).json({ error: 'Aucun code actif. Demandez un nouveau code.' });
+        return;
+      }
+      if (verificationResult.outcome === 'too_many_attempts') {
+        res.status(429).json({
+          error: 'Nombre maximal de tentatives atteint (5). Demandez un nouveau code.',
+        });
+        return;
+      }
+      if (verificationResult.outcome === 'expired') {
+        res.status(400).json({ error: 'Code expiré (10 minutes). Demandez un nouveau code.' });
+        return;
+      }
+      if (verificationResult.outcome === 'mismatch') {
         res.status(400).json({
           error: `Code incorrect (${verificationResult.remainingAttempts} tentative(s) restante(s)).`,
         });
@@ -1027,7 +1295,11 @@ export function createApp(deps: AppDeps) {
         nowMs
       );
 
-      res.json({ ok: true, phoneVerified: true });
+      res.json({
+        ok: true,
+        phoneVerified: true,
+        phoneVerifiedNumber: verificationResult.verifiedPhone,
+      });
     } catch (error) {
       handleRouteError(res, error, 'POST /api/security/verify-phone-code');
     }
@@ -1077,6 +1349,7 @@ export function createApp(deps: AppDeps) {
           fieldValue,
           now: nowFn,
           getSecrets,
+          isProduction: isProd,
           providers: {
             createPaymentProvider,
             createSmsProvider,
@@ -1099,7 +1372,8 @@ export function createApp(deps: AppDeps) {
     try {
       const startedAt = nowFn();
       const nowDate = new Date(startedAt);
-      const timeBudgetMs = 50_000;
+      const timeBudgetMs = deps.cronTimeBudgetMs ?? 50_000;
+      const maxConcurrency = deps.cronMaxConcurrency ?? 5;
       const slotKey = getQuarterHourSlotKeyDouala(nowDate);
       const lockRef = db.doc(`cronLocks/run-reminders-${slotKey}`);
 
@@ -1109,6 +1383,7 @@ export function createApp(deps: AppDeps) {
         tx.set(lockRef, {
           job: 'run-reminders',
           slotKey,
+          expiresAt: new Date(startedAt + CRON_LOCK_TTL_MS),
           createdAt: fieldValue.serverTimestamp(),
         });
         return false;
@@ -1122,35 +1397,92 @@ export function createApp(deps: AppDeps) {
       const todayDouala = getTodayDoualaDate(nowDate);
       const currentHour = getCurrentDoualaHour(nowDate);
 
-      const tenantsSnap = await db.collection('tenants').get();
+      // Coût optimisé : requête unique collectionGroup sur les dettes actives uniquement
+      const activeDebtsSnap = await db
+        .collectionGroup('debts')
+        .where('status', 'in', [...ACTIVE_DEBT_STATUSES])
+        .get();
+
+      const debtsByTenant = new Map<string, DocSnapshotLike[]>();
+      for (const debtDoc of activeDebtsSnap.docs) {
+        const data = (debtDoc.data() || {}) as { tenantId?: string; remainingAmount?: number };
+        if (Number(data.remainingAmount || 0) <= 0) continue;
+        const pathParts = debtDoc.ref.path.split('/');
+        const resolvedTenantId =
+          data.tenantId || (pathParts[0] === 'tenants' && pathParts[1] ? pathParts[1] : '');
+        if (!resolvedTenantId || !isValidId(resolvedTenantId)) continue;
+        const list = debtsByTenant.get(resolvedTenantId);
+        if (list) {
+          list.push(debtDoc);
+        } else {
+          debtsByTenant.set(resolvedTenantId, [debtDoc]);
+        }
+      }
+
+      // Équité par curseur tournant entre exécutions
+      const sortedTenantIds = Array.from(debtsByTenant.keys()).sort();
+      const cursorRef = db.doc('cronLocks/run-reminders-cursor');
+      const cursorSnap = await cursorRef.get();
+      const prevCursor = cursorSnap.exists
+        ? (cursorSnap.data() as { lastTenantId?: string }).lastTenantId
+        : undefined;
+
+      let orderedTenantIds = sortedTenantIds;
+      if (prevCursor && sortedTenantIds.length > 1) {
+        const startIdx = sortedTenantIds.findIndex((id) => id > prevCursor);
+        if (startIdx > 0) {
+          orderedTenantIds = [
+            ...sortedTenantIds.slice(startIdx),
+            ...sortedTenantIds.slice(0, startIdx),
+          ];
+        }
+      }
+
       let processed = 0;
       let sent = 0;
       let failed = 0;
       let stoppedEarly = false;
+      let lastProcessedTenantId = '';
       const skipped: Record<string, number> = {};
 
       const addSkip = (reason: string, count = 1) => {
         skipped[reason] = (skipped[reason] || 0) + count;
       };
 
-      await runWithConcurrency(tenantsSnap.docs, 5, async (tenantDoc) => {
+      await runWithConcurrency(orderedTenantIds, maxConcurrency, async (tenantId) => {
         if (nowFn() - startedAt >= timeBudgetMs) {
           stoppedEarly = true;
           return;
         }
 
-        const tenantId = tenantDoc.id;
+        const tenantActiveDebts = debtsByTenant.get(tenantId) || [];
+        if (tenantActiveDebts.length === 0) {
+          return;
+        }
+
+        const [tenantDoc, rulesSnap] = await Promise.all([
+          db.doc(`tenants/${tenantId}`).get(),
+          db.collection(`tenants/${tenantId}/reminderRules`).where('enabled', '==', true).get(),
+        ]);
+
+        if (!tenantDoc.exists) {
+          return;
+        }
+
         const tenantData = (tenantDoc.data() || {}) as {
           plan?: string;
           quietHoursStart?: number;
           quietHoursEnd?: number;
           autoEscalate?: boolean;
+          activeDebtsCount?: number;
         };
 
-        const [rulesSnap, debtsSnap] = await Promise.all([
-          db.collection(`tenants/${tenantId}/reminderRules`).where('enabled', '==', true).get(),
-          db.collection(`tenants/${tenantId}/debts`).get(),
-        ]);
+        if (Number(tenantData.activeDebtsCount) !== tenantActiveDebts.length) {
+          await tenantDoc.ref.update({
+            activeDebtsCount: tenantActiveDebts.length,
+            updatedAt: fieldValue.serverTimestamp(),
+          });
+        }
 
         const rules = rulesSnap.docs.map(
           (d) =>
@@ -1165,30 +1497,23 @@ export function createApp(deps: AppDeps) {
             }
         );
 
-        const activeDebts = debtsSnap.docs.filter((d) => {
-          const data = (d.data() || {}) as { status?: string; remainingAmount?: number };
-          return (
-            data.status !== 'payee' &&
-            data.status !== 'annulee' &&
-            Number(data.remainingAmount || 0) > 0
-          );
-        });
-
-        if (activeDebts.length === 0 || rules.length === 0) {
+        if (rules.length === 0) {
+          lastProcessedTenantId = tenantId;
           return;
         }
 
         const quietStart = Number(tenantData.quietHoursStart ?? 20);
         const quietEnd = Number(tenantData.quietHoursEnd ?? 7);
         if (isWithinQuietHours(currentHour, quietStart, quietEnd)) {
-          addSkip('quiet_hours', activeDebts.length);
+          addSkip('quiet_hours', tenantActiveDebts.length);
+          lastProcessedTenantId = tenantId;
           return;
         }
 
         const planKey: PlanId = isValidPlanId(tenantData.plan) ? tenantData.plan : 'free';
         const whatsappAllowed = PLANS[planKey].whatsappEnabled;
 
-        for (const debtDoc of activeDebts) {
+        for (const debtDoc of tenantActiveDebts) {
           if (nowFn() - startedAt >= timeBudgetMs) {
             stoppedEarly = true;
             break;
@@ -1196,16 +1521,38 @@ export function createApp(deps: AppDeps) {
 
           const debtData = (debtDoc.data() || {}) as {
             dueDate: string;
-            reminderCount?: number;
+            appliedRuleOffsets?: unknown[];
+            ruleReminderCounts?: Record<string, unknown>;
           };
 
           const daysOffset = getDaysOverdue(debtData.dueDate, todayDouala);
-          const matchingRule = rules.find((r) => Number(r.offsetDays) === daysOffset);
+          const appliedOffsets = Array.isArray(debtData.appliedRuleOffsets)
+            ? debtData.appliedRuleOffsets.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+            : [];
+          const ruleCounts =
+            debtData.ruleReminderCounts && typeof debtData.ruleReminderCounts === 'object'
+              ? debtData.ruleReminderCounts
+              : {};
+
+          // Rattrapage jusqu'à +3 jours après offsetDays sans re-déclencher une règle déjà appliquée
+          const matchingRule = rules
+            .filter((r) => {
+              const offset = Number(r.offsetDays);
+              return (
+                daysOffset >= offset &&
+                daysOffset - offset <= 3 &&
+                !appliedOffsets.includes(offset)
+              );
+            })
+            .sort((a, b) => Number(b.offsetDays) - Number(a.offsetDays))[0];
+
           if (!matchingRule) {
             continue;
           }
 
-          if (Number(debtData.reminderCount || 0) >= Number(matchingRule.maxReminders || 4)) {
+          const ruleOffset = Number(matchingRule.offsetDays);
+          const countForRule = Number(ruleCounts[String(ruleOffset)] || 0);
+          if (countForRule >= Number(matchingRule.maxReminders || 4)) {
             addSkip('rule_max_reminders');
             continue;
           }
@@ -1231,12 +1578,14 @@ export function createApp(deps: AppDeps) {
                 channel: effectiveChannel,
                 tone: effectiveTone,
                 trigger: 'cron',
+                ruleOffsetDays: ruleOffset,
               },
               {
                 db,
                 fieldValue,
                 now: nowFn,
                 getSecrets,
+                isProduction: isProd,
                 providers: {
                   createPaymentProvider,
                   createSmsProvider,
@@ -1254,7 +1603,18 @@ export function createApp(deps: AppDeps) {
             }
           }
         }
+
+        lastProcessedTenantId = tenantId;
       });
+
+      if (lastProcessedTenantId) {
+        await cursorRef.set({
+          job: 'run-reminders-cursor',
+          lastTenantId: lastProcessedTenantId,
+          expiresAt: new Date(nowFn() + CRON_LOCK_TTL_MS),
+          updatedAt: fieldValue.serverTimestamp(),
+        });
+      }
 
       log.info({ slotKey, processed, sent, failed, stoppedEarly }, 'CRON run-reminders completed');
 
@@ -1266,6 +1626,7 @@ export function createApp(deps: AppDeps) {
         skipped,
         failed,
         stoppedEarly,
+        ...(lastProcessedTenantId ? { lastTenantId: lastProcessedTenantId } : {}),
       });
     } catch (error) {
       handleRouteError(res, error, 'POST /api/cron/run-reminders');
@@ -1323,10 +1684,10 @@ export function createApp(deps: AppDeps) {
         checked += 1;
         const msRemaining = expiresMs - nowMs;
         const daysRemaining = msRemaining / (24 * 60 * 60 * 1000);
-        const securityRef = db.doc(`tenantSecurity/${tenantDoc.id}`);
-        const secSnap = await securityRef.get();
-        const secData = secSnap.exists
-          ? (secSnap.data() as { expiryReminder5dFor?: string; expiryNoticeFor?: string })
+        const privSecurityRef = db.doc(`tenantSecurityPrivate/${tenantDoc.id}`);
+        const privSnap = await privSecurityRef.get();
+        const privData = privSnap.exists
+          ? (privSnap.data() as { expiryReminder5dFor?: string; expiryNoticeFor?: string })
           : {};
 
         const safeName = escapeHtml(tenant.name || 'Votre entreprise');
@@ -1335,7 +1696,7 @@ export function createApp(deps: AppDeps) {
         );
         const safeExpDate = escapeHtml(tenant.planExpiresAt.slice(0, 10));
 
-        if (daysRemaining > 0 && daysRemaining <= 5 && secData.expiryReminder5dFor !== tenant.planExpiresAt) {
+        if (daysRemaining > 0 && daysRemaining <= 5 && privData.expiryReminder5dFor !== tenant.planExpiresAt) {
           if (tenant.email) {
             const ok = await sendLifecycleEmail({
               to: tenant.email,
@@ -1346,8 +1707,12 @@ export function createApp(deps: AppDeps) {
             });
             if (ok) {
               remindersSent += 1;
-              await securityRef.set(
-                { expiryReminder5dFor: tenant.planExpiresAt, updatedAt: fieldValue.serverTimestamp() },
+              await privSecurityRef.set(
+                {
+                  tenantId: tenantDoc.id,
+                  expiryReminder5dFor: tenant.planExpiresAt,
+                  updatedAt: fieldValue.serverTimestamp(),
+                },
                 { merge: true }
               );
             }
@@ -1364,7 +1729,7 @@ export function createApp(deps: AppDeps) {
             movedToGrace += 1;
           }
 
-          if (secData.expiryNoticeFor !== tenant.planExpiresAt && tenant.email) {
+          if (privData.expiryNoticeFor !== tenant.planExpiresAt && tenant.email) {
             const ok = await sendLifecycleEmail({
               to: tenant.email,
               subject: `PayReminder — Abonnement ${safePlan} expiré (période de grâce 3 jours)`,
@@ -1374,8 +1739,12 @@ export function createApp(deps: AppDeps) {
             });
             if (ok) {
               remindersSent += 1;
-              await securityRef.set(
-                { expiryNoticeFor: tenant.planExpiresAt, updatedAt: fieldValue.serverTimestamp() },
+              await privSecurityRef.set(
+                {
+                  tenantId: tenantDoc.id,
+                  expiryNoticeFor: tenant.planExpiresAt,
+                  updatedAt: fieldValue.serverTimestamp(),
+                },
                 { merge: true }
               );
             }
@@ -2014,6 +2383,37 @@ export function createApp(deps: AppDeps) {
     } catch (error) {
       handleRouteError(res, error, 'POST /api/reports/send-tenant-email');
     }
+  });
+
+  // ==========================================================================
+  // 12. Gestionnaires finaux JSON (404 /api & erreurs Express JSON sans HTML)
+  // ==========================================================================
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Route API introuvable.' });
+  });
+
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const errObj = err as { type?: string; status?: number; statusCode?: number };
+    if (err instanceof HttpError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    const errorId = crypto.randomBytes(6).toString('hex');
+    if (errObj?.type === 'entity.parse.failed' || (err instanceof SyntaxError && errObj?.status === 400)) {
+      log.warn({ errorId, type: errObj?.type }, 'Malformed JSON request body');
+      res.status(400).json({ error: 'Corps de requête JSON invalide.', errorId });
+      return;
+    }
+    if (errObj?.type === 'entity.too.large' || errObj?.status === 413 || errObj?.statusCode === 413) {
+      log.warn({ errorId, type: errObj?.type }, 'Request payload too large');
+      res.status(413).json({ error: 'Corps de requête trop volumineux (limite 100 Ko).', errorId });
+      return;
+    }
+    log.error({ errorId, err }, 'Unhandled Express error');
+    res.status(500).json({
+      error: 'Erreur interne du serveur.',
+      errorId,
+    });
   });
 
   return app;

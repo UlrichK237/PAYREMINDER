@@ -1,3 +1,6 @@
+import crypto from 'node:crypto';
+import type { ServerSecrets } from './types';
+
 export class HttpError extends Error {
   readonly statusCode: number;
   readonly skipReason?: string;
@@ -16,7 +19,9 @@ export const simulationRoutesEnabled =
   (!isProduction && !process.env.K_SERVICE) ||
   process.env.ENABLE_SIMULATION_ROUTES === 'true';
 
-export function getServerSecrets() {
+const DEV_FALLBACK_OTP_PEPPER = 'payreminder-dev-otp-pepper-local-only';
+
+export function getServerSecrets(): ServerSecrets {
   return {
     whatsappAccessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',
     whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
@@ -31,7 +36,28 @@ export function getServerSecrets() {
     emailProviderApiKey: process.env.EMAIL_PROVIDER_API_KEY || '',
     emailFromAddress: process.env.EMAIL_FROM_ADDRESS || 'rapports@payreminder.cm',
     cronSecret: process.env.CRON_SECRET || '',
+    otpPepper: process.env.OTP_PEPPER || '',
+    allowedPhonePrefixes: process.env.ALLOWED_PHONE_PREFIXES || '+237',
     allowPlanChangeWithoutPayment: process.env.ALLOW_PLAN_CHANGE_WITHOUT_PAYMENT === 'true',
     appBaseUrl: process.env.APP_URL || 'http://localhost:3000',
   };
+}
+
+export function resolveOtpPepper(secrets: ServerSecrets, prod = isProduction): string {
+  const clean = (secrets.otpPepper || '').trim();
+  if (clean) {
+    return clean;
+  }
+  if (prod) {
+    throw new HttpError(503, 'OTP_PEPPER non configuré sur le serveur.', 'otp_pepper_missing');
+  }
+  return DEV_FALLBACK_OTP_PEPPER;
+}
+
+export function hmacPhoneNumber(pepper: string, phoneE164: string): string {
+  return crypto.createHmac('sha256', pepper).update(phoneE164.trim()).digest('hex');
+}
+
+export function hmacPhoneCode(pepper: string, salt: string, code: string): string {
+  return crypto.createHmac('sha256', pepper).update(`${salt}:${code}`).digest('hex');
 }

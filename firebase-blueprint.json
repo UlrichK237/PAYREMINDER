@@ -164,6 +164,9 @@
         "fallbackToSms": {
           "type": "boolean"
         },
+        "activeDebtsCount": {
+          "type": "integer"
+        },
         "ownerId": {
           "type": "string",
           "maxLength": 128,
@@ -371,6 +374,12 @@
         "paymentLink": {
           "type": "string",
           "maxLength": 300
+        },
+        "appliedRuleOffsets": {
+          "type": "array"
+        },
+        "ruleReminderCounts": {
+          "type": "object"
         },
         "createdAt": {
           "type": "string",
@@ -692,11 +701,11 @@
     },
     "TenantSecurity": {
       "title": "TenantSecurity",
-      "description": "État de sécurité serveur par entreprise (quotas journaliers et vérification SMS propriétaire).",
+      "description": "État de sécurité public-membre par entreprise (quotas journaliers et vérification téléphone).",
       "type": "object",
       "properties": {
         "phoneVerified": { "type": "boolean" },
-        "verifiedPhone": { "type": "string", "maxLength": 20 },
+        "phoneVerifiedNumber": { "type": "string", "maxLength": 20 },
         "phoneVerifiedAt": { "type": "string", "format": "date-time", "maxLength": 40 },
         "dailyUsage": {
           "type": "object",
@@ -707,6 +716,48 @@
         },
         "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
       }
+    },
+    "TenantSecurityPrivate": {
+      "title": "TenantSecurityPrivate",
+      "description": "Données privées OTP, hachage HMAC et compteurs anti SMS-pumping (serveur uniquement).",
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string", "maxLength": 128 },
+        "phoneHash": { "type": "string", "maxLength": 128 },
+        "phoneSalt": { "type": "string", "maxLength": 64 },
+        "phoneCodeExpiresAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "phoneVerifyAttempts": { "type": "integer" },
+        "phoneTarget": { "type": "string", "maxLength": 20 },
+        "otpHistory": { "type": "object" },
+        "expiryReminder5dFor": { "type": "string", "maxLength": 40 },
+        "expiryNoticeFor": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      }
+    },
+    "Suppression": {
+      "title": "Suppression",
+      "description": "Hash HMAC-SHA256 d'un numéro ayant demandé STOP (serveur uniquement).",
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string", "maxLength": 128 },
+        "phoneHash": { "type": "string", "maxLength": 128 },
+        "reason": { "type": "string", "maxLength": 40 },
+        "sourceDebtorId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["tenantId", "phoneHash", "reason", "createdAt"]
+    },
+    "DebtorSendState": {
+      "title": "DebtorSendState",
+      "description": "Horodatages des envois des 7 derniers jours pour contrôle anti-harcèlement atomique.",
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string", "maxLength": 128 },
+        "debtorId": { "type": "string", "maxLength": 128 },
+        "sentTimestamps": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["tenantId", "debtorId", "sentTimestamps", "updatedAt"]
     },
     "BillingRecord": {
       "title": "BillingRecord",
@@ -731,14 +782,17 @@
     },
     "CronLock": {
       "title": "CronLock",
-      "description": "Verrou anti-double exécution des tâches planifiées (serveur uniquement).",
+      "description": "Verrou anti-double exécution et curseur d'équité des tâches planifiées (serveur uniquement).",
       "type": "object",
       "properties": {
         "job": { "type": "string", "maxLength": 60 },
         "slotKey": { "type": "string", "maxLength": 40 },
-        "createdAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+        "lastTenantId": { "type": "string", "maxLength": 128 },
+        "expiresAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
       },
-      "required": ["job", "slotKey", "createdAt"]
+      "required": ["job", "expiresAt"]
     },
     "AuditLog": {
       "title": "AuditLog",
@@ -773,9 +827,13 @@
       "schema": { "$ref": "#/entities/TenantSecurity" },
       "description": "Compteurs journaliers anti-harcèlement et statut de vérification téléphone (écriture serveur uniquement)."
     },
+    "/tenantSecurityPrivate/{tenantId}": {
+      "schema": { "$ref": "#/entities/TenantSecurityPrivate" },
+      "description": "Secrets OTP, hachage et anti SMS-pumping (lecture/écriture serveur uniquement)."
+    },
     "/cronLocks/{lockId}": {
       "schema": { "$ref": "#/entities/CronLock" },
-      "description": "Verrous anti-double exécution des crons (lecture/écriture serveur uniquement)."
+      "description": "Verrous anti-double exécution des crons et curseur d'équité (serveur uniquement, TTL expiresAt)."
     },
     "/tenants/{tenantId}": {
       "schema": { "$ref": "#/entities/Tenant" },
@@ -788,6 +846,14 @@
     "/tenants/{tenantId}/debtors/{debtorId}": {
       "schema": { "$ref": "#/entities/Debtor" },
       "description": "Débiteurs de l'entreprise."
+    },
+    "/tenants/{tenantId}/suppressions/{phoneHash}": {
+      "schema": { "$ref": "#/entities/Suppression" },
+      "description": "Liste d'opposition HMAC irréversible (STOP / opt-out, serveur uniquement)."
+    },
+    "/tenants/{tenantId}/debtorSendState/{debtorId}": {
+      "schema": { "$ref": "#/entities/DebtorSendState" },
+      "description": "Horodatages glissants des 7 derniers jours pour plafond hebdomadaire atomique."
     },
     "/tenants/{tenantId}/debts/{debtId}": {
       "schema": { "$ref": "#/entities/Debt" },
