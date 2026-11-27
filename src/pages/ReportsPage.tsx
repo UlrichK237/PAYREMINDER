@@ -5,7 +5,13 @@ import { Download, FileText, Mail } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { auth } from '../lib/firebase';
-import { formatDateFr, formatFcfa, getCurrentDoualaMonth, PAYMENT_METHOD_LABELS } from '../utils/formatters';
+import {
+  formatDateFr,
+  formatFcfa,
+  formatPercent,
+  getCurrentDoualaMonth,
+  PAYMENT_METHOD_LABELS,
+} from '../utils/formatters';
 import { downloadMonthlyReportPdf } from '../utils/pdfGenerator';
 import { PLANS } from '../utils/plans';
 
@@ -190,25 +196,25 @@ export function ReportsPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
           <p className="text-xs text-slate-500 dark:text-slate-400">Encaissé ({reportData.monthLabel})</p>
-          <p className="text-xl font-bold font-num text-emerald-700 dark:text-emerald-400 mt-1">
+          <p className="text-xl font-bold font-sans tabular-nums text-emerald-700 dark:text-emerald-400 mt-1">
             {formatFcfa(reportData.collectedThisMonth)}
           </p>
         </div>
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
           <p className="text-xs text-slate-500 dark:text-slate-400">Restant dû global</p>
-          <p className="text-xl font-bold font-num text-slate-900 dark:text-white mt-1">
+          <p className="text-xl font-bold font-sans tabular-nums text-slate-900 dark:text-white mt-1">
             {formatFcfa(reportData.totalDue)}
           </p>
         </div>
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
           <p className="text-xs text-slate-500 dark:text-slate-400">Taux de récupération</p>
-          <p className="text-xl font-bold font-num text-slate-900 dark:text-white mt-1">
-            {reportData.recoveryRate.toFixed(1)} %
+          <p className="text-xl font-bold font-sans tabular-nums text-slate-900 dark:text-white mt-1">
+            {formatPercent(reportData.recoveryRate)}
           </p>
         </div>
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
           <p className="text-xs text-slate-500 dark:text-slate-400">Relances envoyées ce mois</p>
-          <p className="text-xl font-bold font-num text-slate-900 dark:text-white mt-1">
+          <p className="text-xl font-bold font-sans tabular-nums text-slate-900 dark:text-white mt-1">
             {reportData.remindersSent}
           </p>
         </div>
@@ -253,7 +259,7 @@ export function ReportsPage() {
                     <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
                       {PAYMENT_METHOD_LABELS[p.method]}
                     </td>
-                    <td className="px-4 py-3 text-right font-num font-semibold text-emerald-700 dark:text-emerald-400">
+                    <td className="px-4 py-3 text-right font-sans font-semibold tabular-nums text-emerald-700 dark:text-emerald-400 whitespace-nowrap">
                       {formatFcfa(p.amount)}
                     </td>
                   </tr>

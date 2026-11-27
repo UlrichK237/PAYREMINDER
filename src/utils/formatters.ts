@@ -15,6 +15,19 @@ export function formatFcfa(amount: number): string {
 }
 
 /**
+ * Formate un pourcentage (valeur 0..100) en français avec virgule et espace insécable avant %.
+ * Exemple : 23 -> "23,0 %", 87.46 -> "87,5 %"
+ */
+export function formatPercent(value: number, digits = 1): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return new Intl.NumberFormat('fr-FR', {
+    style: 'percent',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(safe / 100);
+}
+
+/**
  * Retourne la date du jour au format YYYY-MM-DD dans le fuseau Africa/Douala.
  */
 export function getTodayDoualaDate(now = new Date()): string {
@@ -174,7 +187,7 @@ export function pickEscalatedTone(daysOverdue: number, autoEscalate: boolean): T
 export const DEBT_STATUS_LABELS: Record<DebtStatus, string> = {
   en_cours: 'En cours',
   partiellement_payee: 'Partiellement payée',
-  payee: 'Payée',
+  payee: 'Soldée',
   en_retard: 'En retard',
   annulee: 'Annulée',
 };

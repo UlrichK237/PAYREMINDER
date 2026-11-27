@@ -11,6 +11,7 @@ import { maskPhoneNumber, sanitizeLogValue, sanitizeStringForLogs } from '../../
 import { appendSmsStopNotice, SMS_MAX_LENGTH, SMS_STOP_NOTICE } from '../../server/services/reminderService';
 import {
   formatFcfa,
+  formatPercent,
   getCurrentDoualaMonth,
   getDaysOverdue,
   isValidCameroonPhone,
@@ -27,6 +28,12 @@ describe('Formatters & validation téléphones (Africa/Douala)', () => {
     expect(formatFcfa(15000)).toBe('15\u00A0000\u00A0FCFA');
     expect(formatFcfa(0)).toBe('0\u00A0FCFA');
     expect(formatFcfa(1250499.6)).toBe('1\u00A0250\u00A0500\u00A0FCFA');
+  });
+
+  it('formate les pourcentages en français avec virgule et espace insécable', () => {
+    expect(formatPercent(23)).toBe('23,0\u00A0%');
+    expect(formatPercent(87.46)).toBe('87,5\u00A0%');
+    expect(formatPercent(92, 0)).toBe('92\u00A0%');
   });
 
   it('normalise et valide les numéros camerounais et internationaux', () => {

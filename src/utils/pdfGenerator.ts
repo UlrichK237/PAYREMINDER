@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import type { Debt, Payment, Tenant } from '../types/payreminder';
-import { formatDateFr, formatDateTimeFr, formatFcfa, PAYMENT_METHOD_LABELS } from './formatters';
+import { formatDateFr, formatDateTimeFr, formatFcfa, formatPercent, PAYMENT_METHOD_LABELS } from './formatters';
 
 function sanitizePdfText(val: string): string {
   // jsPDF Helvetica gère bien le latin1 et l'espace normale (remplace \u00A0 par espace standard)
@@ -130,7 +130,7 @@ export function downloadMonthlyReportPdf(params: {
   const kpis = [
     ['Total restant dû', formatFcfa(totalDue)],
     ['Encaissé sur la période', formatFcfa(collectedThisMonth)],
-    ['Taux de récupération', `${recoveryRate.toFixed(1)} %`],
+    ['Taux de récupération', formatPercent(recoveryRate)],
     ['Dossiers en retard', `${overdueCount}`],
     ['Relances envoyées', `${remindersSent}`],
   ];

@@ -176,10 +176,22 @@ export function Layout({ children, onQuickNewDebt }: LayoutProps) {
         </header>
 
         {/* Viewport Content */}
-        <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-24 lg:pb-10">
+        <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-28 lg:pb-10">
           {children}
         </main>
       </div>
+
+      {/* Mobile Floating Action Button "+ Dette" sur Accueil et Dettes uniquement */}
+      {(location.pathname === '/' || location.pathname === '/dettes') && (
+        <button
+          type="button"
+          onClick={onQuickNewDebt}
+          className="lg:hidden fixed right-4 bottom-20 z-30 inline-flex items-center gap-1.5 min-h-[44px] px-4 rounded-full bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold shadow-lg shadow-emerald-950/20 dark:shadow-black/40 transition-colors whitespace-nowrap"
+        >
+          <Plus className="w-4 h-4 shrink-0" />
+          <span>Dette</span>
+        </button>
+      )}
 
       {/* Mobile Bottom Navigation Bar (<= 64px) */}
       <nav

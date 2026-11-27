@@ -178,7 +178,7 @@ export function QuickDebtModal({ open, onClose }: QuickDebtModalProps) {
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="Ex: 15000"
-              className="w-full min-h-[46px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-base font-num font-semibold"
+              className="w-full min-h-[46px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-base font-sans font-semibold tabular-nums"
             />
           </div>
 

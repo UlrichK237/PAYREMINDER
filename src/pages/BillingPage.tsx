@@ -133,7 +133,7 @@ export function BillingPage() {
               {tenant.planExpiresAt ? ` · Expire le ${formatDateFr(tenant.planExpiresAt)}` : ''}
             </p>
           </div>
-          <span className="font-num text-sm font-bold text-slate-900 dark:text-white">
+          <span className="font-sans text-sm font-bold tabular-nums text-slate-900 dark:text-white">
             {PLANS[tenant.plan].priceFcfa === 0
               ? 'Gratuit'
               : `${formatFcfa(PLANS[tenant.plan].priceFcfa)} / mois`}
@@ -234,8 +234,8 @@ export function BillingPage() {
                   <h3 className="text-lg font-bold text-slate-900 dark:text-white mt-0.5">
                     {plan.name}
                   </h3>
-                  <p className="text-xl font-bold font-num text-emerald-700 dark:text-emerald-400 mt-2">
-                    {plan.priceFcfa === 0 ? '0 FCFA' : `${formatFcfa(plan.priceFcfa)} / mois`}
+                  <p className="text-xl font-bold font-sans tabular-nums text-emerald-700 dark:text-emerald-400 mt-2">
+                    {plan.priceFcfa === 0 ? '0\u00A0FCFA' : `${formatFcfa(plan.priceFcfa)} / mois`}
                   </p>
                 </div>
 
@@ -296,7 +296,7 @@ export function BillingPage() {
                   <div>
                     <p className="font-semibold text-slate-900 dark:text-white">
                       Forfait {PLANS[item.planId]?.name || item.planId} ·{' '}
-                      <span className="font-num">{formatFcfa(item.amountFcfa)}</span>
+                      <span className="font-sans font-semibold tabular-nums">{formatFcfa(item.amountFcfa)}</span>
                     </p>
                     <p className="text-slate-500 dark:text-slate-400 font-num">
                       {formatDateFr(item.paidAt || item.createdAt)} · Réf. {item.paymentRef}

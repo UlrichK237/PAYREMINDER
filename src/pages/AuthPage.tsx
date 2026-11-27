@@ -295,9 +295,9 @@ export function AuthPage() {
       </header>
 
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 lg:py-12 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
-        {/* Colonne présentation */}
-        <div className="lg:col-span-6 space-y-6">
-          <div className="space-y-3">
+        {/* Colonne présentation (secondaire sous lg, à gauche à partir de lg) */}
+        <div className="order-2 lg:order-1 lg:col-span-6 flex flex-col gap-6">
+          <div className="order-2 lg:order-1 space-y-3">
             <p className="text-xs font-semibold tracking-wide text-emerald-700 dark:text-emerald-400">
               Conçu pour les commerçants et écoles au Cameroun · FCFA (XAF)
             </p>
@@ -309,45 +309,50 @@ export function AuthPage() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => enterDemoMode('pagnes')}
-              className="flex items-start gap-3 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-emerald-600 dark:hover:border-emerald-500 text-left transition-colors"
-            >
-              <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                <Store className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Démo Vendeuse de pagnes
-                </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  12 clientes · Paiements partiels · WhatsApp & MoMo
-                </p>
-              </div>
-            </button>
+          <div className="order-1 lg:order-2 space-y-3 pt-2">
+            <h2 className="lg:hidden text-sm font-semibold text-slate-900 dark:text-white">
+              Essayer sans compte
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => enterDemoMode('pagnes')}
+                className="flex items-start gap-3 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-emerald-600 dark:hover:border-emerald-500 text-left transition-colors"
+              >
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <Store className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                    Démo Vendeuse de pagnes
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    12 clientes · Paiements partiels · WhatsApp & MoMo
+                  </p>
+                </div>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => enterDemoMode('ecole')}
-              className="flex items-start gap-3 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-emerald-600 dark:hover:border-emerald-500 text-left transition-colors"
-            >
-              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-400 flex items-center justify-center shrink-0">
-                <GraduationCap className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Démo École & Scolarité
-                </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  30 élèves en retard · Tranches · Rapports PDF
-                </p>
-              </div>
-            </button>
+              <button
+                type="button"
+                onClick={() => enterDemoMode('ecole')}
+                className="flex items-start gap-3 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-emerald-600 dark:hover:border-emerald-500 text-left transition-colors"
+              >
+                <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-400 flex items-center justify-center shrink-0">
+                  <GraduationCap className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                    Démo École & Scolarité
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    30 élèves en retard · Tranches · Rapports PDF
+                  </p>
+                </div>
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500 dark:text-slate-400">
+          <div className="order-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500 dark:text-slate-400">
             <span className="inline-flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
               Fuseau Africa/Douala
@@ -359,8 +364,8 @@ export function AuthPage() {
           </div>
         </div>
 
-        {/* Colonne formulaire Auth */}
-        <div className="lg:col-span-6">
+        {/* Colonne formulaire Auth (en premier sous lg, à droite à partir de lg) */}
+        <div className="order-1 lg:order-2 lg:col-span-6">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 sm:p-8 space-y-5">
             <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
               <button

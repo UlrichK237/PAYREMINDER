@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { MessageSquare, Send, ShieldCheck } from 'lucide-react';
+import { ChevronDown, MessageSquare, Send, ShieldCheck } from 'lucide-react';
 import { LogStatusLabel } from '../components/StatusText';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
@@ -10,6 +10,7 @@ export function RemindersPage() {
   const { debtors, messageLogs, capabilities, simulateInboundWhatsapp } = useData();
   const showSimulation = demoMode || capabilities.simulationRoutes;
   const [channelFilter, setChannelFilter] = useState<'all' | 'whatsapp' | 'sms' | 'inbound'>('all');
+  const [simAccordionOpen, setSimAccordionOpen] = useState(false);
   const [simPhone, setSimPhone] = useState('');
   const [simMessage, setSimMessage] = useState('Je paie vendredi par MTN MoMo');
   const [simResult, setSimResult] = useState<string | null>(null);
@@ -53,95 +54,26 @@ export function RemindersPage() {
 
   return (
     <div className="space-y-6">
-      {/* Bannière transparence fournisseur */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* En-tête historique des messages */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
-            <ShieldCheck className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
-            <span>Journal complet des relances & conformité</span>
+            <ShieldCheck className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
+            <span>Historique des messages</span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {capabilities.simulationMode
-              ? 'Aucune clé WhatsApp ou SMS configurée côté serveur : tous les envois sont journalisés en mode simulation (« simulé »).'
+              ? 'Mode simulation : aucune clé WhatsApp/SMS configurée côté serveur, les envois sont journalisés localement (« simulé »).'
               : 'Passerelle serveur connectée · Exécution automatique toutes les 15 minutes (Africa/Douala).'}
           </p>
         </div>
-        <div className="text-xs text-slate-500 dark:text-slate-400 font-num whitespace-nowrap">
+        <div className="text-xs text-slate-500 dark:text-slate-400 font-sans tabular-nums whitespace-nowrap">
           {messageLogs.length} message(s) journalisé(s)
         </div>
       </div>
 
-      {/* Simulateur de réponse WhatsApp entrante (STOP / Promesse de paiement) */}
-      {showSimulation && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-4">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-              Tester le webhook WhatsApp entrant (STOP & Promesses de paiement)
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Essayez d’envoyer « STOP » pour activer l’opt-out ou « Je paie vendredi » pour enregistrer automatiquement une promesse datée.
-            </p>
-          </div>
-
-          <form onSubmit={handleSimulateInbound} className="grid grid-cols-1 md:grid-cols-12 gap-3">
-            <div className="md:col-span-4">
-              <select
-                value={selectedPhone}
-                onChange={(e) => setSimPhone(e.target.value)}
-                className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-num"
-              >
-                {debtors.map((d) => (
-                  <option key={d.id} value={d.phone}>
-                    {d.name} ({d.phone})
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="md:col-span-5">
-              <input
-                type="text"
-                required
-                value={simMessage}
-                onChange={(e) => setSimMessage(e.target.value)}
-                placeholder="Ex: STOP ou Je paie vendredi"
-                className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
-              />
-            </div>
-            <div className="md:col-span-3">
-              <button
-                type="submit"
-                disabled={simRunning || debtors.length === 0}
-                className="w-full min-h-[44px] px-4 rounded-xl bg-slate-900 dark:bg-emerald-700 hover:bg-slate-800 dark:hover:bg-emerald-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>Simuler réponse client</span>
-              </button>
-            </div>
-          </form>
-
-          <div className="flex flex-wrap gap-2">
-            {['STOP', 'ARRET', 'Je paie vendredi', 'Je règle demain'].map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => setSimMessage(preset)}
-                className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
-              >
-                « {preset} »
-              </button>
-            ))}
-          </div>
-
-          {simResult && (
-            <p className="text-xs text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 p-3 rounded-xl">
-              {simResult}
-            </p>
-          )}
-        </div>
-      )}
-
       {/* Filtres journaux */}
-      <div className="inline-flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
+      <div className="inline-flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto max-w-full">
         {(
           [
             ['all', 'Tous les messages'],
@@ -154,7 +86,7 @@ export function RemindersPage() {
             key={key}
             type="button"
             onClick={() => setChannelFilter(key)}
-            className={`px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+            className={`min-h-[38px] px-3.5 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
               channelFilter === key
                 ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
                 : 'text-slate-600 dark:text-slate-400'
@@ -222,6 +154,90 @@ export function RemindersPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Accordéon fermé par défaut : Outils de test (simulation) */}
+      {showSimulation && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setSimAccordionOpen((prev) => !prev)}
+            aria-expanded={simAccordionOpen}
+            className="w-full min-h-[48px] px-5 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+          >
+            <span className="text-sm font-semibold text-slate-900 dark:text-white">
+              Outils de test (simulation)
+            </span>
+            <ChevronDown
+              className={`w-4 h-4 text-slate-500 transition-transform ${
+                simAccordionOpen ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+
+          {simAccordionOpen && (
+            <div className="px-5 pb-5 pt-2 border-t border-slate-100 dark:border-slate-800 space-y-4">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Simulez une réponse WhatsApp entrante : essayez « STOP » pour activer l’opt-out ou « Je paie vendredi » pour enregistrer une promesse datée.
+              </p>
+
+              <form onSubmit={handleSimulateInbound} className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                <div className="md:col-span-4">
+                  <select
+                    value={selectedPhone}
+                    onChange={(e) => setSimPhone(e.target.value)}
+                    className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-num"
+                  >
+                    {debtors.map((d) => (
+                      <option key={d.id} value={d.phone}>
+                        {d.name} ({d.phone})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="md:col-span-5">
+                  <input
+                    type="text"
+                    required
+                    value={simMessage}
+                    onChange={(e) => setSimMessage(e.target.value)}
+                    placeholder="Ex: STOP ou Je paie vendredi"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
+                  />
+                </div>
+                <div className="md:col-span-3">
+                  <button
+                    type="submit"
+                    disabled={simRunning || debtors.length === 0}
+                    className="w-full min-h-[44px] px-4 rounded-xl bg-slate-900 dark:bg-emerald-700 hover:bg-slate-800 dark:hover:bg-emerald-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Simuler réponse client</span>
+                  </button>
+                </div>
+              </form>
+
+              <div className="flex flex-wrap gap-2">
+                {['STOP', 'ARRET', 'Je paie vendredi', 'Je règle demain'].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setSimMessage(preset)}
+                    className="min-h-[38px] px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+                  >
+                    « {preset} »
+                  </button>
+                ))}
+              </div>
+
+              {simResult && (
+                <p className="text-xs text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 p-3 rounded-xl">
+                  {simResult}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

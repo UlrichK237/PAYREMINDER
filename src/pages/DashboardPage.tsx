@@ -1,12 +1,25 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, CalendarClock, Database, GraduationCap, Store, TrendingUp } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowRight,
+  CalendarClock,
+  CheckCircle2,
+  Database,
+  GraduationCap,
+  Percent,
+  Store,
+  TrendingUp,
+  Wallet,
+  X,
+} from 'lucide-react';
 import { DebtStatusLabel } from '../components/StatusText';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import {
   formatDateFr,
   formatFcfa,
+  formatPercent,
   getCurrentDoualaMonth,
   getDaysOverdue,
   getTodayDoualaDate,
@@ -17,6 +30,7 @@ export function DashboardPage({ onOpenNewDebt }: { onOpenNewDebt: () => void }) 
   const { tenant, debts, payments, debtors, loadDemoDataset } = useData();
   const [loadingDemo, setLoadingDemo] = useState<'pagnes' | 'ecole' | null>(null);
   const [demoFeedback, setDemoFeedback] = useState<string | null>(null);
+  const [demoBannerDismissed, setDemoBannerDismissed] = useState(false);
 
   const currentMonth = getCurrentDoualaMonth();
   const today = getTodayDoualaDate();
@@ -122,51 +136,14 @@ export function DashboardPage({ onOpenNewDebt }: { onOpenNewDebt: () => void }) 
 
   return (
     <div className="space-y-6">
-      {/* Bandeau Démo / Jeu de données */}
-      {(debtors.length === 0 || demoMode) && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
-              <Database className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
-              <span>
-                {demoMode ? 'Jeux de données de démonstration' : 'Démarrer rapidement avec un exemple réel'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              {tenant?.name} · Basculez à tout moment entre une boutique de pagnes (12 clientes) ou une école (30 élèves).
-            </p>
-            {demoFeedback && (
-              <p className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">{demoFeedback}</p>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <button
-              type="button"
-              disabled={loadingDemo !== null}
-              onClick={() => void handleLoadDemo('pagnes')}
-              className="min-h-[42px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-800 dark:text-slate-200 inline-flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800"
-            >
-              <Store className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
-              <span>{loadingDemo === 'pagnes' ? 'Chargement...' : 'Vendeuse de pagnes (12)'}</span>
-            </button>
-            <button
-              type="button"
-              disabled={loadingDemo !== null}
-              onClick={() => void handleLoadDemo('ecole')}
-              className="min-h-[42px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-800 dark:text-slate-200 inline-flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800"
-            >
-              <GraduationCap className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-              <span>{loadingDemo === 'ecole' ? 'Chargement...' : 'École scolarité (30)'}</span>
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* KPIs Principaux */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-1.5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Total restant dû</p>
-          <p className="text-2xl font-bold font-num text-slate-900 dark:text-white">
+      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div className="col-span-2 lg:col-span-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Total restant dû</p>
+            <Wallet className="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
+          </div>
+          <p className="text-3xl lg:text-2xl font-bold font-sans tabular-nums text-slate-900 dark:text-white">
             {formatFcfa(metrics.totalDue)}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -174,9 +151,12 @@ export function DashboardPage({ onOpenNewDebt }: { onOpenNewDebt: () => void }) 
           </p>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-1.5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Récupéré ce mois</p>
-          <p className="text-2xl font-bold font-num text-emerald-700 dark:text-emerald-400">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Récupéré ce mois</p>
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          </div>
+          <p className="text-xl sm:text-2xl font-bold font-sans tabular-nums text-emerald-700 dark:text-emerald-400">
             {formatFcfa(metrics.collectedThisMonth)}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -184,19 +164,25 @@ export function DashboardPage({ onOpenNewDebt }: { onOpenNewDebt: () => void }) 
           </p>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-1.5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Taux de récupération</p>
-          <p className="text-2xl font-bold font-num text-slate-900 dark:text-white">
-            {metrics.recoveryRate.toFixed(1)} %
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Taux de récupération</p>
+            <Percent className="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
+          </div>
+          <p className="text-xl sm:text-2xl font-bold font-sans tabular-nums text-slate-900 dark:text-white">
+            {formatPercent(metrics.recoveryRate)}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Global sur portefeuille suivi
           </p>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-1.5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Retards critiques (+30 j)</p>
-          <p className="text-2xl font-bold font-num text-red-700 dark:text-red-400">
+        <div className="col-span-2 lg:col-span-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Retards critiques (+30 j)</p>
+            <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+          </div>
+          <p className="text-2xl font-bold font-sans tabular-nums text-red-700 dark:text-red-400">
             {formatFcfa(metrics.aging.b30_plus.amount)}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -204,6 +190,64 @@ export function DashboardPage({ onOpenNewDebt }: { onOpenNewDebt: () => void }) 
           </p>
         </div>
       </section>
+
+      {/* Bandeau Démo / Jeu de données compact et fermable */}
+      {(debtors.length === 0 || demoMode) && !demoBannerDismissed && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex items-start justify-between gap-3 min-w-0">
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex items-center gap-2 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white">
+                <Database className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
+                <span>
+                  {demoMode ? 'Jeux de données de démonstration' : 'Démarrer rapidement avec un exemple réel'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                {tenant?.name} · Boutique de pagnes (12) ou École (30)
+              </p>
+              {demoFeedback && (
+                <p className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">{demoFeedback}</p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setDemoBannerDismissed(true)}
+              aria-label="Fermer le bandeau de démonstration"
+              className="lg:hidden min-h-[44px] min-w-[44px] -mr-1 -mt-1 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={loadingDemo !== null}
+              onClick={() => void handleLoadDemo('pagnes')}
+              className="min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-800 dark:text-slate-200 inline-flex items-center gap-1.5 hover:bg-slate-50 dark:hover:bg-slate-800"
+            >
+              <Store className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400 shrink-0" />
+              <span>{loadingDemo === 'pagnes' ? 'Chargement...' : 'Vendeuse de pagnes (12)'}</span>
+            </button>
+            <button
+              type="button"
+              disabled={loadingDemo !== null}
+              onClick={() => void handleLoadDemo('ecole')}
+              className="min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-800 dark:text-slate-200 inline-flex items-center gap-1.5 hover:bg-slate-50 dark:hover:bg-slate-800"
+            >
+              <GraduationCap className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+              <span>{loadingDemo === 'ecole' ? 'Chargement...' : 'École scolarité (30)'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDemoBannerDismissed(true)}
+              aria-label="Fermer le bandeau de démonstration"
+              className="hidden lg:flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Graphique Évolution + Retards par ancienneté */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -298,7 +342,7 @@ export function DashboardPage({ onOpenNewDebt }: { onOpenNewDebt: () => void }) 
                     <span className="font-medium text-slate-700 dark:text-slate-300">
                       {bucket.label} ({bucket.count})
                     </span>
-                    <span className="font-num font-semibold text-slate-900 dark:text-white">
+                    <span className="font-sans font-semibold tabular-nums text-slate-900 dark:text-white">
                       {formatFcfa(bucket.amount)}
                     </span>
                   </div>
@@ -355,7 +399,7 @@ export function DashboardPage({ onOpenNewDebt }: { onOpenNewDebt: () => void }) 
                       <DebtStatusLabel status={d.status} />
                     </div>
                   </div>
-                  <span className="font-num text-sm font-semibold text-slate-900 dark:text-white whitespace-nowrap">
+                  <span className="font-sans text-sm font-semibold tabular-nums text-slate-900 dark:text-white whitespace-nowrap">
                     {formatFcfa(d.remainingAmount)}
                   </span>
                 </div>
@@ -389,7 +433,7 @@ export function DashboardPage({ onOpenNewDebt }: { onOpenNewDebt: () => void }) 
                       Prévu le {formatDateFr(d.dueDate)} · {d.description}
                     </p>
                   </div>
-                  <span className="font-num text-sm font-semibold text-slate-900 dark:text-white whitespace-nowrap">
+                  <span className="font-sans text-sm font-semibold tabular-nums text-slate-900 dark:text-white whitespace-nowrap">
                     {formatFcfa(d.remainingAmount)}
                   </span>
                 </div>

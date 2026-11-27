@@ -5,7 +5,7 @@ import { ImportDebtorsModal } from '../components/ImportDebtorsModal';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import type { Channel, Debtor } from '../types/payreminder';
-import { formatDateFr, formatFcfa } from '../utils/formatters';
+import { formatDateFr, formatFcfa, formatPercent } from '../utils/formatters';
 import { formatQuotaValue, PLANS } from '../utils/plans';
 
 export function DebtorsPage() {
@@ -260,10 +260,10 @@ export function DebtorsPage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3.5 text-right font-num text-xs text-slate-700 dark:text-slate-300">
-                        {d.reliabilityScore} %
+                      <td className="px-4 py-3.5 text-right font-sans tabular-nums text-xs text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                        {formatPercent(d.reliabilityScore, 0)}
                       </td>
-                      <td className="px-4 py-3.5 text-right font-num font-semibold text-slate-900 dark:text-white whitespace-nowrap">
+                      <td className="px-4 py-3.5 text-right font-sans font-semibold tabular-nums text-slate-900 dark:text-white whitespace-nowrap">
                         {formatFcfa(totalOwed)}
                       </td>
                       <td className="px-4 py-3.5 text-right whitespace-nowrap">

@@ -96,7 +96,7 @@ export function PaymentModal({ debt, onClose }: PaymentModalProps) {
               Encaisser un paiement
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              {debt.debtorName} · Solde dû : <span className="font-num font-semibold">{formatFcfa(debt.remainingAmount)}</span>
+              {debt.debtorName} · Solde dû : <span className="font-sans font-semibold tabular-nums">{formatFcfa(debt.remainingAmount)}</span>
             </p>
           </div>
           <button
@@ -170,7 +170,7 @@ export function PaymentModal({ debt, onClose }: PaymentModalProps) {
                   max={debt.remainingAmount}
                   value={effectiveAmountStr}
                   onChange={(e) => setAmount(e.target.value)}
-                  className="w-full min-h-[46px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-base font-num font-semibold"
+                  className="w-full min-h-[46px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-base font-sans font-semibold tabular-nums"
                 />
               </div>
 
