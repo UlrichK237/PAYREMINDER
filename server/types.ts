@@ -123,4 +123,5 @@ export interface AppDeps {
   logger?: LoggerLike;
   cronTimeBudgetMs?: number;
   cronMaxConcurrency?: number;
+  trustProxyHops?: number;
 }

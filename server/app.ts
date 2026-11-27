@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import rateLimit, { type IncrementResponse, type Options, type Store } from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator, type IncrementResponse, type Options, type Store } from 'express-rate-limit';
 import helmet from 'helmet';
 import {
   getServerSecrets,
@@ -9,6 +9,7 @@ import {
   HttpError,
   isProduction as defaultIsProduction,
   resolveOtpPepper,
+  resolveTrustProxyHops,
   simulationRoutesEnabled as defaultSimRoutesEnabled,
 } from './config';
 import { logger as defaultLogger } from './logger';
@@ -218,6 +219,8 @@ export function createApp(deps: AppDeps) {
   const isProd = deps.isProduction ?? defaultIsProduction;
   const simRoutesEnabled = deps.simulationRoutesEnabled ?? defaultSimRoutesEnabled;
   const log = deps.logger ?? defaultLogger;
+  const trustProxyHops = resolveTrustProxyHops(isProd, deps.trustProxyHops ?? process.env.TRUST_PROXY_HOPS);
+  app.set('trust proxy', trustProxyHops);
 
   const createPaymentProvider = deps.providers?.createPaymentProvider ?? defaultCreatePaymentProvider;
   const createSmsProvider = deps.providers?.createSmsProvider ?? defaultCreateSmsProvider;
@@ -374,6 +377,8 @@ export function createApp(deps: AppDeps) {
     standardHeaders: true,
     legacyHeaders: false,
     store: new ClockAwareMemoryStore(nowFn),
+    keyGenerator: (req) => ipKeyGenerator(req.ip || '127.0.0.1'),
+    validate: { xForwardedForHeader: false },
     message: { error: 'Trop de demandes de vérification depuis cette adresse IP (limite : 10 par heure).' },
   });
 
@@ -1047,6 +1052,7 @@ export function createApp(deps: AppDeps) {
         }
 
         const nowMs = nowFn();
+        const oneHourAgoMs = nowMs - 60 * 60 * 1000;
         const oneDayAgoMs = nowMs - 24 * 60 * 60 * 1000;
         const phoneDestHash = hmacPhoneNumber(pepper, phone);
         const code = crypto.randomInt(100000, 1000000).toString();
@@ -1056,9 +1062,36 @@ export function createApp(deps: AppDeps) {
 
         const privRef = db.doc(`tenantSecurityPrivate/${tenantId}`);
         const pubRef = db.doc(`tenantSecurity/${tenantId}`);
+        const destRef = db.doc(`otpDestinations/${phoneDestHash}`);
 
         await db.runTransaction(async (tx) => {
-          const [privSnap, pubSnap] = await Promise.all([tx.get(privRef), tx.get(pubRef)]);
+          const [privSnap, pubSnap, destSnap] = await Promise.all([
+            tx.get(privRef),
+            tx.get(pubRef),
+            tx.get(destRef),
+          ]);
+
+          const destData = destSnap.exists
+            ? (destSnap.data() as { sentTimestamps?: unknown[] })
+            : {};
+          const destPruned24h = Array.isArray(destData.sentTimestamps)
+            ? destData.sentTimestamps.map((v) => Number(v)).filter((ts) => Number.isFinite(ts) && ts >= oneDayAgoMs)
+            : [];
+          const destPruned1h = destPruned24h.filter((ts) => ts >= oneHourAgoMs);
+
+          if (destPruned24h.length >= 5) {
+            throw new HttpError(
+              429,
+              'Limite globale de 5 codes SMS par 24 heures atteinte pour ce numéro de téléphone.'
+            );
+          }
+          if (destPruned1h.length >= 3) {
+            throw new HttpError(
+              429,
+              'Limite globale de 3 codes SMS par heure atteinte pour ce numéro de téléphone.'
+            );
+          }
+
           const privData = privSnap.exists
             ? (privSnap.data() as { otpHistory?: Record<string, unknown[]> })
             : {};
@@ -1081,6 +1114,17 @@ export function createApp(deps: AppDeps) {
             );
           }
           nextHistory[phoneDestHash] = [...destTimestamps, nowMs];
+
+          tx.set(
+            destRef,
+            {
+              phoneDestHash,
+              sentTimestamps: [...destPruned24h, nowMs],
+              expiresAt: new Date(nowMs + 2 * 24 * 60 * 60 * 1000),
+              updatedAt: fieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
 
           tx.set(
             privRef,
@@ -1523,6 +1567,7 @@ export function createApp(deps: AppDeps) {
             dueDate: string;
             appliedRuleOffsets?: unknown[];
             ruleReminderCounts?: Record<string, unknown>;
+            ruleLastSentAt?: Record<string, unknown>;
           };
 
           const daysOffset = getDaysOverdue(debtData.dueDate, todayDouala);
@@ -1533,16 +1578,19 @@ export function createApp(deps: AppDeps) {
             debtData.ruleReminderCounts && typeof debtData.ruleReminderCounts === 'object'
               ? debtData.ruleReminderCounts
               : {};
+          const ruleLastSentAt =
+            debtData.ruleLastSentAt && typeof debtData.ruleLastSentAt === 'object'
+              ? debtData.ruleLastSentAt
+              : {};
 
-          // Rattrapage jusqu'à +3 jours après offsetDays sans re-déclencher une règle déjà appliquée
+          // Rattrapage initial jusqu'à +3 jours après offsetDays ; les règles avec maxReminders > 1
+          // déjà entamées restent éligibles jusqu'à atteindre leur plafond (espacement min. 48h).
           const matchingRule = rules
             .filter((r) => {
               const offset = Number(r.offsetDays);
-              return (
-                daysOffset >= offset &&
-                daysOffset - offset <= 3 &&
-                !appliedOffsets.includes(offset)
-              );
+              if (appliedOffsets.includes(offset) || daysOffset < offset) return false;
+              const countForRule = Number(ruleCounts[String(offset)] || 0);
+              return countForRule > 0 || daysOffset - offset <= 3;
             })
             .sort((a, b) => Number(b.offsetDays) - Number(a.offsetDays))[0];
 
@@ -1551,10 +1599,21 @@ export function createApp(deps: AppDeps) {
           }
 
           const ruleOffset = Number(matchingRule.offsetDays);
-          const countForRule = Number(ruleCounts[String(ruleOffset)] || 0);
-          if (countForRule >= Number(matchingRule.maxReminders || 4)) {
+          const ruleKey = String(ruleOffset);
+          const maxForRule = Math.max(1, Number(matchingRule.maxReminders ?? 1));
+          const countForRule = Number(ruleCounts[ruleKey] || 0);
+          if (countForRule >= maxForRule) {
             addSkip('rule_max_reminders');
             continue;
+          }
+
+          const lastRuleSentRaw = ruleLastSentAt[ruleKey];
+          if (typeof lastRuleSentRaw === 'string') {
+            const lastRuleSentMs = Date.parse(lastRuleSentRaw);
+            if (Number.isFinite(lastRuleSentMs) && nowFn() - lastRuleSentMs < 48 * 60 * 60 * 1000) {
+              addSkip('rule_cooldown_48h');
+              continue;
+            }
           }
 
           const startHour = Number(matchingRule.allowedStartHour ?? 8);
@@ -1579,6 +1638,7 @@ export function createApp(deps: AppDeps) {
                 tone: effectiveTone,
                 trigger: 'cron',
                 ruleOffsetDays: ruleOffset,
+                ruleMaxReminders: maxForRule,
               },
               {
                 db,

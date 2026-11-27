@@ -50,6 +50,7 @@ function setupHarness(options?: {
   smsShouldThrow?: boolean;
   cronTimeBudgetMs?: number;
   cronMaxConcurrency?: number;
+  trustProxyHops?: number;
   onSmsSend?: () => void;
 }) {
   let currentNow = options?.nowMs ?? Date.parse('2026-11-25T10:00:00.000Z'); // 11h00 Douala
@@ -152,6 +153,7 @@ function setupHarness(options?: {
     simulationRoutesEnabled: options?.simulationRoutesEnabled ?? true,
     cronTimeBudgetMs: options?.cronTimeBudgetMs,
     cronMaxConcurrency: options?.cronMaxConcurrency,
+    trustProxyHops: options?.trustProxyHops,
     logger: {
       info: () => {},
       warn: () => {},
@@ -773,7 +775,10 @@ describe('Routes Express PayReminder (Supertest)', () => {
   it('D5 : rattrape un retard de +2j, sépare ruleReminderCounts du reminderCount manuel et pose expiresAt sur cronLocks', async () => {
     const { app, db, secrets, advanceMs } = setupHarness();
 
-    // Dette avec 2 jours de retard (dueDate = 2026-11-23, aujourd'hui 2026-11-25) et 4 relances manuelles déjà faites
+    // Dette avec 2 jours de retard (dueDate = 2026-11-23, aujourd'hui 2026-11-25), règle maxReminders=1 et 4 relances manuelles déjà faites
+    await db.doc('tenants/tenant_A/reminderRules/rule_0').update({
+      maxReminders: 1,
+    });
     await db.doc('tenants/tenant_A/debts/debt_1').update({
       dueDate: '2026-11-23',
       reminderCount: 4,
@@ -991,5 +996,247 @@ describe('Routes Express PayReminder (Supertest)', () => {
     expect(errRes.body.errorId).toMatch(/^[0-9a-f]{12}$/);
     expect(JSON.stringify(errRes.body)).not.toContain('SECRET_INTERNAL_STACK_LEAK');
   });
+
+  // ==========================================================================
+  // E1 : TRUST_PROXY_HOPS + ipKeyGenerator (IPv4/IPv6 derrière proxy)
+  // ==========================================================================
+  it('E1 : sépare les compteurs IP via X-Forwarded-For quand TRUST_PROXY_HOPS=1 (et IPv6 /56) et ignore l’en-tête quand TRUST_PROXY_HOPS=0', async () => {
+    const seedMultiTenants = (db: ReturnType<typeof setupHarness>['db']) => {
+      for (let i = 1; i <= 9; i += 1) {
+        db.seed(`tenants/tenant_p_${i}`, {
+          name: `Entreprise Proxy ${i}`,
+          phone: `+23767710000${i}`,
+          plan: 'free',
+          ownerId: 'owner_A',
+        });
+        db.seed(`tenants/tenant_p_${i}/users/owner_A`, {
+          tenantId: `tenant_p_${i}`,
+          uid: 'owner_A',
+          role: 'owner',
+          status: 'active',
+        });
+      }
+    };
+
+    // 1. TRUST_PROXY_HOPS = 1 : des X-Forwarded-For différents ont des compteurs IP séparés
+    const { app: proxyApp, db: proxyDb } = setupHarness({ trustProxyHops: 1 });
+    seedMultiTenants(proxyDb);
+
+    let okCountIp1 = 0;
+    let status11thIp1 = 0;
+    for (let i = 1; i <= 4; i += 1) {
+      for (let j = 0; j < 3; j += 1) {
+        const res = await request(proxyApp)
+          .post('/api/security/send-phone-code')
+          .set('Authorization', 'Bearer token_owner_a')
+          .set('X-Forwarded-For', '198.51.100.10')
+          .send({ tenantId: `tenant_p_${i}` });
+        if (res.status === 200) okCountIp1 += 1;
+        else {
+          status11thIp1 = res.status;
+          break;
+        }
+      }
+      if (status11thIp1) break;
+    }
+    expect(okCountIp1).toBe(10);
+    expect(status11thIp1).toBe(429);
+
+    // Une autre IP via X-Forwarded-For dispose de son propre compteur (non bloquée par 198.51.100.10)
+    await request(proxyApp)
+      .post('/api/security/send-phone-code')
+      .set('Authorization', 'Bearer token_owner_a')
+      .set('X-Forwarded-For', '203.0.113.25')
+      .send({ tenantId: 'tenant_p_5' })
+      .expect(200);
+
+    // Deux adresses IPv6 dans le même préfixe /56 partagent le même compteur normalisé (6 + 4 = 10 -> 11e = 429)
+    for (const tId of ['tenant_p_6', 'tenant_p_7']) {
+      for (let j = 0; j < 3; j += 1) {
+        await request(proxyApp)
+          .post('/api/security/send-phone-code')
+          .set('Authorization', 'Bearer token_owner_a')
+          .set('X-Forwarded-For', '2001:db8:abcd:0012::1')
+          .send({ tenantId: tId })
+          .expect(200);
+      }
+    }
+    for (let j = 0; j < 3; j += 1) {
+      await request(proxyApp)
+        .post('/api/security/send-phone-code')
+        .set('Authorization', 'Bearer token_owner_a')
+        .set('X-Forwarded-For', '2001:db8:abcd:0012::2')
+        .send({ tenantId: 'tenant_p_8' })
+        .expect(200);
+    }
+    await request(proxyApp)
+      .post('/api/security/send-phone-code')
+      .set('Authorization', 'Bearer token_owner_a')
+      .set('X-Forwarded-For', '2001:db8:abcd:0012::2')
+      .send({ tenantId: 'tenant_p_9' })
+      .expect(200);
+
+    // 11e requête dans le même /56 IPv6 -> 429
+    await request(proxyApp)
+      .post('/api/security/send-phone-code')
+      .set('Authorization', 'Bearer token_owner_a')
+      .set('X-Forwarded-For', '2001:db8:abcd:0012::2')
+      .send({ tenantId: 'tenant_p_9' })
+      .expect(429);
+
+    // 2. TRUST_PROXY_HOPS = 0 : X-Forwarded-For est ignoré, toutes les requêtes partagent req.ip
+    const { app: directApp, db: directDb } = setupHarness({ trustProxyHops: 0 });
+    seedMultiTenants(directDb);
+
+    let okCountDirect = 0;
+    for (let i = 1; i <= 4; i += 1) {
+      for (let j = 0; j < 3; j += 1) {
+        if (okCountDirect === 10) break;
+        const spoofedIp = okCountDirect % 2 === 0 ? '198.51.100.10' : '203.0.113.25';
+        await request(directApp)
+          .post('/api/security/send-phone-code')
+          .set('Authorization', 'Bearer token_owner_a')
+          .set('X-Forwarded-For', spoofedIp)
+          .send({ tenantId: `tenant_p_${i}` })
+          .expect(200);
+        okCountDirect += 1;
+      }
+      if (okCountDirect === 10) break;
+    }
+    expect(okCountDirect).toBe(10);
+
+    // 11e requête même avec un nouveau X-Forwarded-For -> 429 car X-Forwarded-For est ignoré
+    await request(directApp)
+      .post('/api/security/send-phone-code')
+      .set('Authorization', 'Bearer token_owner_a')
+      .set('X-Forwarded-For', '192.0.2.99')
+      .send({ tenantId: 'tenant_p_5' })
+      .expect(429);
+  });
+
+  // ==========================================================================
+  // E2 : Plafond global cross-tenant otpDestinations (3/h et 5/24h + TTL)
+  // ==========================================================================
+  it('E2 : applique le plafond global otpDestinations (3/h et 5/24h) entre deux entreprises partageant le même numéro', async () => {
+    const { app, db, secrets, advanceMs } = setupHarness();
+    const sharedPhone = '+237677889900';
+
+    await db.doc('tenants/tenant_A').update({ phone: sharedPhone });
+    await db.doc('tenants/tenant_B').update({ phone: sharedPhone });
+
+    // 3 envois par tenant_A dans la même heure -> OK (compteur global = 3/h)
+    for (let i = 0; i < 3; i += 1) {
+      await request(app)
+        .post('/api/security/send-phone-code')
+        .set('Authorization', 'Bearer token_owner_a')
+        .send({ tenantId: 'tenant_A' })
+        .expect(200);
+    }
+
+    // 4e envoi dans la même heure par une AUTRE entreprise (tenant_B) sur le même numéro -> 429 (plafond 3/h global)
+    await request(app)
+      .post('/api/security/send-phone-code')
+      .set('Authorization', 'Bearer token_owner_b')
+      .send({ tenantId: 'tenant_B' })
+      .expect(429);
+
+    // 65 min plus tard (> 1h, toujours dans les 24h) : tenant_B peut envoyer 2 codes (total global = 5/24h)
+    advanceMs(65 * 60 * 1000);
+    for (let i = 0; i < 2; i += 1) {
+      await request(app)
+        .post('/api/security/send-phone-code')
+        .set('Authorization', 'Bearer token_owner_b')
+        .send({ tenantId: 'tenant_B' })
+        .expect(200);
+    }
+
+    // 6e envoi dans les 24h par tenant_B sur le même numéro -> 429 (plafond 5/24h global)
+    await request(app)
+      .post('/api/security/send-phone-code')
+      .set('Authorization', 'Bearer token_owner_b')
+      .send({ tenantId: 'tenant_B' })
+      .expect(429);
+
+    // Vérifie le document otpDestinations/{phoneDestHash} et la présence de expiresAt (+2 jours)
+    const phoneDestHash = crypto.createHmac('sha256', secrets.otpPepper).update(sharedPhone).digest('hex');
+    const destDoc = db.getRaw(`otpDestinations/${phoneDestHash}`) as {
+      sentTimestamps?: number[];
+      expiresAt?: Date;
+    };
+    expect(destDoc).toBeDefined();
+    expect(destDoc.sentTimestamps?.length).toBe(5);
+    expect(destDoc.expiresAt instanceof Date).toBe(true);
+  });
+
+  // ==========================================================================
+  // E3 : Règle maxReminders > 1 avec espacement minimal de 48h
+  // ==========================================================================
+  it('E3 : envoie au maximum maxReminders=3 relances espacées d’au moins 48h puis marque appliedRuleOffsets', async () => {
+    const { app, db, secrets, advanceMs } = setupHarness();
+
+    await db.doc('tenants/tenant_A/reminderRules/rule_0').update({
+      offsetDays: 0,
+      maxReminders: 3,
+      enabled: true,
+    });
+
+    // t = 0h (2026-11-25 10:00Z, J0) -> envoi #1
+    const run1 = await request(app)
+      .post('/api/cron/run-reminders')
+      .set('x-cron-secret', secrets.cronSecret)
+      .expect(200);
+    expect(run1.body.sent).toBe(1);
+
+    let debt = db.getRaw('tenants/tenant_A/debts/debt_1') as {
+      appliedRuleOffsets?: number[];
+      ruleReminderCounts?: Record<string, number>;
+      ruleLastSentAt?: Record<string, string>;
+    };
+    expect(debt.ruleReminderCounts).toEqual({ '0': 1 });
+    expect(typeof debt.ruleLastSentAt?.['0']).toBe('string');
+    expect(debt.appliedRuleOffsets ?? []).toEqual([]);
+
+    // t = +25h (24h dette écoulé mais < 48h pour la règle) -> bloqué par espacement 48h
+    advanceMs(25 * 60 * 60 * 1000);
+    const runBlocked = await request(app)
+      .post('/api/cron/run-reminders')
+      .set('x-cron-secret', secrets.cronSecret)
+      .expect(200);
+    expect(runBlocked.body.sent).toBe(0);
+    expect(runBlocked.body.skipped?.rule_cooldown_48h).toBe(1);
+
+    // t = +49h (>= 48h depuis envoi #1) -> envoi #2
+    advanceMs(24 * 60 * 60 * 1000);
+    const run2 = await request(app)
+      .post('/api/cron/run-reminders')
+      .set('x-cron-secret', secrets.cronSecret)
+      .expect(200);
+    expect(run2.body.sent).toBe(1);
+
+    debt = db.getRaw('tenants/tenant_A/debts/debt_1') as typeof debt;
+    expect(debt.ruleReminderCounts).toEqual({ '0': 2 });
+    expect(debt.appliedRuleOffsets ?? []).toEqual([]);
+
+    // t = +98h (>= 48h depuis envoi #2, même au-delà de +3j d'échéance) -> envoi #3 et clôture de la règle
+    advanceMs(49 * 60 * 60 * 1000);
+    const run3 = await request(app)
+      .post('/api/cron/run-reminders')
+      .set('x-cron-secret', secrets.cronSecret)
+      .expect(200);
+    expect(run3.body.sent).toBe(1);
+
+    debt = db.getRaw('tenants/tenant_A/debts/debt_1') as typeof debt;
+    expect(debt.ruleReminderCounts).toEqual({ '0': 3 });
+    expect(debt.appliedRuleOffsets).toEqual([0]);
+
+    // t = +150h -> plus rien n'est envoyé
+    advanceMs(52 * 60 * 60 * 1000);
+    const run4 = await request(app)
+      .post('/api/cron/run-reminders')
+      .set('x-cron-secret', secrets.cronSecret)
+      .expect(200);
+    expect(run4.body.sent).toBe(0);
+  });
 });
+
 

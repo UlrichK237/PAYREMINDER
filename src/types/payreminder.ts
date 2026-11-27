@@ -139,6 +139,7 @@ export interface Debt {
   paymentLink?: string;
   appliedRuleOffsets?: number[];
   ruleReminderCounts?: Record<string, number>;
+  ruleLastSentAt?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }

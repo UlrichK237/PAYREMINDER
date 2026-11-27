@@ -37,6 +37,7 @@ export interface SendReminderParams {
   trigger: 'manual' | 'cron';
   actorUid?: string;
   ruleOffsetDays?: number;
+  ruleMaxReminders?: number;
 }
 
 export interface SendReminderResult {
@@ -247,6 +248,7 @@ export async function sendReminderForDebt(
     lastReminderAt?: string;
     appliedRuleOffsets?: number[];
     ruleReminderCounts?: Record<string, number>;
+    ruleLastSentAt?: Record<string, string>;
   };
 
   if (debtData.status === 'payee' || debtData.status === 'annulee' || Number(debtData.remainingAmount) <= 0) {
@@ -371,6 +373,7 @@ export async function sendReminderForDebt(
       lastReminderAt?: string;
       appliedRuleOffsets?: unknown[];
       ruleReminderCounts?: Record<string, unknown>;
+      ruleLastSentAt?: Record<string, unknown>;
     };
 
     if (freshDebt.status === 'payee' || freshDebt.status === 'annulee' || Number(freshDebt.remainingAmount) <= 0) {
@@ -449,6 +452,51 @@ export async function sendReminderForDebt(
       );
     }
 
+    const appliedRuleOffsets = Array.isArray(freshDebt.appliedRuleOffsets)
+      ? freshDebt.appliedRuleOffsets.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+      : [];
+    const ruleReminderCounts: Record<string, number> = {};
+    if (freshDebt.ruleReminderCounts && typeof freshDebt.ruleReminderCounts === 'object') {
+      for (const [k, v] of Object.entries(freshDebt.ruleReminderCounts)) {
+        const num = Number(v);
+        if (Number.isFinite(num)) {
+          ruleReminderCounts[k] = num;
+        }
+      }
+    }
+    const ruleLastSentAt: Record<string, string> = {};
+    if (freshDebt.ruleLastSentAt && typeof freshDebt.ruleLastSentAt === 'object') {
+      for (const [k, v] of Object.entries(freshDebt.ruleLastSentAt)) {
+        if (typeof v === 'string' && v.trim()) {
+          ruleLastSentAt[k] = v;
+        }
+      }
+    }
+
+    if (trigger === 'cron' && typeof params.ruleOffsetDays === 'number') {
+      const offsetKey = String(params.ruleOffsetDays);
+      const maxForRule = Math.max(1, Number(params.ruleMaxReminders ?? 1));
+      const countForRule = Number(ruleReminderCounts[offsetKey] || 0);
+      if (appliedRuleOffsets.includes(params.ruleOffsetDays) || countForRule >= maxForRule) {
+        throw new HttpError(
+          409,
+          'Nombre maximal de relances atteint pour cette règle.',
+          'rule_max_reminders'
+        );
+      }
+      const lastRuleIso = ruleLastSentAt[offsetKey];
+      if (lastRuleIso) {
+        const lastRuleMs = Date.parse(lastRuleIso);
+        if (Number.isFinite(lastRuleMs) && nowMs - lastRuleMs < 48 * 60 * 60 * 1000) {
+          throw new HttpError(
+            409,
+            'Espacement minimal de 48 heures requis entre deux envois d’une même règle.',
+            'rule_cooldown_48h'
+          );
+        }
+      }
+    }
+
     tx.update(tenantRef, {
       remindersUsedThisMonth: currentUsed + 1,
       quotaResetMonth: currentMonth,
@@ -480,23 +528,11 @@ export async function sendReminderForDebt(
       { merge: true }
     );
 
-    const appliedRuleOffsets = Array.isArray(freshDebt.appliedRuleOffsets)
-      ? freshDebt.appliedRuleOffsets.map((n) => Number(n)).filter((n) => Number.isFinite(n))
-      : [];
-    const ruleReminderCounts: Record<string, number> = {};
-    if (freshDebt.ruleReminderCounts && typeof freshDebt.ruleReminderCounts === 'object') {
-      for (const [k, v] of Object.entries(freshDebt.ruleReminderCounts)) {
-        const num = Number(v);
-        if (Number.isFinite(num)) {
-          ruleReminderCounts[k] = num;
-        }
-      }
-    }
-
     return {
       previousLastReminderAt,
       appliedRuleOffsets,
       ruleReminderCounts,
+      ruleLastSentAt,
     };
   });
 
@@ -632,17 +668,24 @@ export async function sendReminderForDebt(
       };
 
       if (trigger === 'cron' && typeof params.ruleOffsetDays === 'number') {
-        const nextAppliedOffsets = [...reservation.appliedRuleOffsets];
-        if (!nextAppliedOffsets.includes(params.ruleOffsetDays)) {
-          nextAppliedOffsets.push(params.ruleOffsetDays);
-        }
         const offsetKey = String(params.ruleOffsetDays);
+        const maxForRule = Math.max(1, Number(params.ruleMaxReminders ?? 1));
+        const nextCount = Number(reservation.ruleReminderCounts[offsetKey] || 0) + 1;
         const nextRuleCounts = {
           ...reservation.ruleReminderCounts,
-          [offsetKey]: Number(reservation.ruleReminderCounts[offsetKey] || 0) + 1,
+          [offsetKey]: nextCount,
         };
-        debtUpdate.appliedRuleOffsets = nextAppliedOffsets;
+        const nextRuleLastSentAt = {
+          ...reservation.ruleLastSentAt,
+          [offsetKey]: reservedNowIso,
+        };
+        const nextAppliedOffsets = [...reservation.appliedRuleOffsets];
+        if (nextCount >= maxForRule && !nextAppliedOffsets.includes(params.ruleOffsetDays)) {
+          nextAppliedOffsets.push(params.ruleOffsetDays);
+        }
         debtUpdate.ruleReminderCounts = nextRuleCounts;
+        debtUpdate.ruleLastSentAt = nextRuleLastSentAt;
+        debtUpdate.appliedRuleOffsets = nextAppliedOffsets;
       }
 
       batch.update(debtRef, debtUpdate);

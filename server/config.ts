@@ -54,6 +54,25 @@ export function resolveOtpPepper(secrets: ServerSecrets, prod = isProduction): s
   return DEV_FALLBACK_OTP_PEPPER;
 }
 
+export function resolveTrustProxyHops(
+  prod = isProduction,
+  rawValue: string | number | undefined = process.env.TRUST_PROXY_HOPS
+): number {
+  const fallback = prod ? 1 : 0;
+  if (rawValue === undefined || rawValue === null) {
+    return fallback;
+  }
+  if (typeof rawValue === 'number') {
+    return Number.isInteger(rawValue) && rawValue >= 0 ? rawValue : fallback;
+  }
+  const trimmed = rawValue.trim();
+  if (!trimmed || !/^[0-9]+$/.test(trimmed)) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 export function hmacPhoneNumber(pepper: string, phoneE164: string): string {
   return crypto.createHmac('sha256', pepper).update(phoneE164.trim()).digest('hex');
 }

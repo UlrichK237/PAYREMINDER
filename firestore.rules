@@ -169,7 +169,7 @@ service cloud.firestore {
           'tenantId', 'debtorId', 'debtorName', 'debtorPhone', 'initialAmount',
           'remainingAmount', 'issuedAt', 'dueDate', 'status', 'description',
           'reminderCount', 'lastReminderAt', 'paymentLink',
-          'appliedRuleOffsets', 'ruleReminderCounts', 'createdAt', 'updatedAt'
+          'appliedRuleOffsets', 'ruleReminderCounts', 'ruleLastSentAt', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.tenantId) && data.tenantId == tenantId &&
         isValidId(data.debtorId) &&
@@ -191,6 +191,7 @@ service cloud.firestore {
         (!('paymentLink' in data) || (data.paymentLink is string && data.paymentLink.size() <= 300)) &&
         (!('appliedRuleOffsets' in data) || (data.appliedRuleOffsets is list && data.appliedRuleOffsets.size() <= 50 && (data.appliedRuleOffsets.size() == 0 || data.appliedRuleOffsets[0] is int))) &&
         (!('ruleReminderCounts' in data) || data.ruleReminderCounts is map) &&
+        (!('ruleLastSentAt' in data) || data.ruleLastSentAt is map) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -381,6 +382,7 @@ service cloud.firestore {
           isValidDebt(incoming(), tenantId) &&
           !('appliedRuleOffsets' in incoming()) &&
           !('ruleReminderCounts' in incoming()) &&
+          !('ruleLastSentAt' in incoming()) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
           isTenantMember(tenantId) &&
@@ -505,6 +507,11 @@ service cloud.firestore {
 
     // Secrets OTP, sel/hash et compteurs SMS-pumping (serveur uniquement, lecture/écriture client interdites)
     match /tenantSecurityPrivate/{tenantId} {
+      allow read, write: if false;
+    }
+
+    // Plafond global des codes SMS OTP par numéro de destination (serveur uniquement, TTL +2 jours)
+    match /otpDestinations/{phoneDestHash} {
       allow read, write: if false;
     }
 

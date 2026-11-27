@@ -551,7 +551,51 @@ describe('Firestore Security Rules (Émulateur)', () => {
           updatedAt: serverTs(),
         })
       );
+
+      // E2 : otpDestinations interdit en lecture et écriture côté client
+      await testEnv.withSecurityRulesDisabled(async (ctx) => {
+        await ctx.firestore().doc('otpDestinations/hash_dest_1').set({
+          phoneDestHash: 'hash_dest_1',
+          sentTimestamps: [1732530000000],
+          expiresAt: firebase.firestore.Timestamp.now(),
+        });
+      });
+      await assertFails(ownerDb.doc('otpDestinations/hash_dest_1').get());
+      await assertFails(staffDb.doc('otpDestinations/hash_dest_1').get());
+      await assertFails(
+        ownerDb.doc('otpDestinations/hash_dest_1').set({
+          phoneDestHash: 'hash_dest_1',
+          sentTimestamps: [],
+        })
+      );
+
+      // E3 : ruleLastSentAt protégé en création et mise à jour côté client
+      await assertFails(
+        ownerDb.doc('tenants/tenant_A/debts/debt_1').update({
+          ruleLastSentAt: { '0': '2026-11-25T10:00:00.000Z' },
+          updatedAt: serverTs(),
+        })
+      );
+      await assertFails(
+        ownerDb.doc('tenants/tenant_A/debts/debt_hack_e3').set({
+          tenantId: 'tenant_A',
+          debtorId: 'deb_1',
+          debtorName: 'Client Seed',
+          debtorPhone: '+237699001122',
+          initialAmount: 5000,
+          remainingAmount: 5000,
+          issuedAt: '2026-11-25',
+          dueDate: '2026-12-05',
+          status: 'en_cours',
+          description: 'Hack E3',
+          reminderCount: 0,
+          ruleLastSentAt: { '0': '2026-11-25T10:00:00.000Z' },
+          createdAt: serverTs(),
+          updatedAt: serverTs(),
+        })
+      );
     });
   });
 });
+
 

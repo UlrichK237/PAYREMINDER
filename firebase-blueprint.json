@@ -381,6 +381,9 @@
         "ruleReminderCounts": {
           "type": "object"
         },
+        "ruleLastSentAt": {
+          "type": "object"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -734,6 +737,18 @@
         "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
       }
     },
+    "OtpDestination": {
+      "title": "OtpDestination",
+      "description": "Compteur global cross-tenant des envois OTP par numéro haché (serveur uniquement, TTL expiresAt +2j).",
+      "type": "object",
+      "properties": {
+        "phoneDestHash": { "type": "string", "maxLength": 128 },
+        "sentTimestamps": { "type": "array" },
+        "expiresAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["phoneDestHash", "sentTimestamps", "expiresAt"]
+    },
     "Suppression": {
       "title": "Suppression",
       "description": "Hash HMAC-SHA256 d'un numéro ayant demandé STOP (serveur uniquement).",
@@ -830,6 +845,10 @@
     "/tenantSecurityPrivate/{tenantId}": {
       "schema": { "$ref": "#/entities/TenantSecurityPrivate" },
       "description": "Secrets OTP, hachage et anti SMS-pumping (lecture/écriture serveur uniquement)."
+    },
+    "/otpDestinations/{phoneDestHash}": {
+      "schema": { "$ref": "#/entities/OtpDestination" },
+      "description": "Compteurs globaux cross-tenant par numéro OTP (serveur uniquement, TTL expiresAt +2j)."
     },
     "/cronLocks/{lockId}": {
       "schema": { "$ref": "#/entities/CronLock" },
