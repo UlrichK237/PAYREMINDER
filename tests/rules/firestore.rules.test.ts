@@ -238,8 +238,8 @@ describe('Firestore Security Rules (Émulateur)', () => {
       const ownerDb = testEnv.authenticatedContext('owner_A', { email: 'ownerA@etoile.cm', email_verified: true }).firestore();
       const staffDb = testEnv.authenticatedContext('staff_A', { email: 'staffA@etoile.cm', email_verified: true }).firestore();
 
-      await assertFails(ownerDb.doc('tenants/tenant_A').update({ remindersUsedThisMonth: 0, updatedAt: serverTs() }));
-      await assertFails(staffDb.doc('tenants/tenant_A').update({ remindersUsedThisMonth: 0, updatedAt: serverTs() }));
+      await assertFails(ownerDb.doc('tenants/tenant_A').update({ remindersUsedThisMonth: 7, updatedAt: serverTs() }));
+      await assertFails(staffDb.doc('tenants/tenant_A').update({ remindersUsedThisMonth: 7, updatedAt: serverTs() }));
     });
 
     it("3. Refuser la lecture et l'écriture d'un utilisateur de l'entreprise A dans l'entreprise B", async () => {
